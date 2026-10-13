@@ -42,6 +42,21 @@ extends Resource
 @export var roll_cooldown := 0.25
 @export var roll_land_window := 0.3   ## roll pressed this long before landing = safe roll-landing
 
+@export_group("Ledges")
+@export var ledge_reach := 0.75          ## wall probe distance from the capsule center
+@export var mantle_min_height := 0.6     ## lower ledges are just stepped/jumped onto
+@export var mantle_max_height := 1.6     ## ground mantle (press jump facing the ledge)
+@export var air_mantle_max_height := 1.3 ## mid-air: ledge at most this far above the feet = mantle
+@export var grab_max_height := 2.3       ## mid-air: up to this = grab and hang
+@export var grab_min_vy := -10.0         ## falling faster than this, hands can't hold
+@export var hang_hand_height := 2.08     ## ledge height above the feet while hanging
+@export var hang_wall_gap := 0.38        ## capsule center to wall while hanging
+@export var shimmy_speed := 1.2
+@export var climb_up_time := 0.9         ## from hanging
+@export var mantle_time_low := 0.35      ## ground mantle at mantle_min_height
+@export var mantle_time_high := 0.65     ## ground mantle at mantle_max_height
+@export var regrab_cooldown := 0.5
+
 @export_group("Landing & ragdoll")
 @export var stumble_land_speed := 14.0
 @export var ragdoll_land_speed := 19.0

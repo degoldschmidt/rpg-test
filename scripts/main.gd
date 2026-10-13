@@ -13,6 +13,8 @@ var markers := {
 	"tunnel": Vector3(0, 0, -25),
 	"ramp_30": Vector3(-19, 1.5, -2 - 1.5 / tan(deg_to_rad(30.0))),
 	"stairs": Vector3(-32, 0, -1),
+	"mantle_block": Vector3(20, 0, -34),  # front face (facing +Z) of a 1.2 m block
+	"climb_wall": Vector3(30, 0, -33.5),  # front face of an 8 m wide, 3 m tall wall
 	"log": Vector3(0, 0, 35),
 	"sweeper": Vector3(14, 0, 35),
 	"bumper": Vector3(-10, 0, 30),
@@ -116,6 +118,13 @@ func _build_level() -> void:
 	L.box(level, Vector3(0.4, 2.2, 6), Transform3D(Basis(), t + Vector3(-1.4, 1.1, 0)), blue)
 	L.box(level, Vector3(0.4, 2.2, 6), Transform3D(Basis(), t + Vector3(1.4, 1.1, 0)), blue)
 	L.box(level, Vector3(3.2, 0.7, 6), Transform3D(Basis(), t + Vector3(0, 1.85, 0)), blue)
+
+	# Climbing area: mantle block (1.2 m), hang/shimmy wall (3 m, 8 m wide), stacked ledges.
+	var mb: Vector3 = markers.mantle_block
+	L.box(level, Vector3(3, 1.2, 2), Transform3D(Basis(), mb + Vector3(0, 0.6, -1)), orange)
+	var cw: Vector3 = markers.climb_wall
+	L.box(level, Vector3(8, 3, 3), Transform3D(Basis(), cw + Vector3(0, 1.5, -1.5)), orange)
+	L.box(level, Vector3(4, 2.5, 3), Transform3D(Basis(), cw + Vector3(0, 4.25, -3.5)), orange)
 
 	# Jump gaps: 1 m high blocks with 2.5 / 3.5 / 4.5 m gaps.
 	var gx := -10.0

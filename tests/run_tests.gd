@@ -35,6 +35,12 @@ func _run() -> void:
 	await test_foot_ik_slope()
 	await test_foot_ik_stairs()
 	await test_climb_stairs()
+	await test_ground_mantle()
+	await test_running_mantle()
+	await test_air_mantle_platform()
+	await test_grab_hang_shimmy_climb()
+	await test_hang_drop()
+	await test_no_grab_out_of_reach()
 	await test_slide()
 	await test_roll()
 	await test_stumble_landing()
@@ -293,6 +299,134 @@ func test_climb_stairs() -> void:
 	check("walks up the stairs", peak > 2.3, "(peak y %.2f)" % peak)
 	check("no stumble/ragdoll on stairs", not PlayerController.State.RAGDOLL in _seen and not PlayerController.State.STUMBLE in _seen)
 	check("feet never sink into the treads", worst_sink > -0.03, "(lowest foot center %.3f m)" % worst_sink)
+	await seconds(0.5)
+
+
+func hand_height() -> float:
+	return (player.rig.bones[&"hand_l"].global_position.y + player.rig.bones[&"hand_r"].global_position.y) * 0.5
+
+
+func grounded() -> bool:
+	return player.state in [PlayerController.State.IDLE, PlayerController.State.WALK,
+		PlayerController.State.RUN, PlayerController.State.CROUCH]
+
+
+func test_ground_mantle() -> void:
+	print("ground mantle (1.2 m block)")
+	await place(main.markers.mantle_block + Vector3(0, 0, 0.55))
+	inp(Vector2.ZERO, false, true)
+	await physics_frame
+	inp()
+	check("jump facing a chest-high ledge mantles", player.state == PlayerController.State.CLIMB)
+	await seconds(1.2)
+	check("ends standing on top", grounded() and absf(player.global_position.y - 1.2) < 0.05,
+		"(y %.2f, %s)" % [player.global_position.y, PlayerController.State.keys()[player.state]])
+	check("no stumble/ragdoll", not PlayerController.State.RAGDOLL in _seen and not PlayerController.State.STUMBLE in _seen)
+	var pe := pelvis_error()
+	check("puppet back in posture after mantle", pe < 0.3, "(%.2f m)" % pe)
+
+
+func test_running_mantle() -> void:
+	print("running mantle")
+	var mb: Vector3 = main.markers.mantle_block
+	await place(mb + Vector3(0, 0, 7))
+	inp(Vector2(0, -1), true)
+	while player.global_position.z - mb.z > 1.3:
+		await physics_frame
+	inp(Vector2(0, -1), true, true)
+	var t := await wait_state(PlayerController.State.CLIMB, 1.0)
+	check("running jump into a ledge mantles", t >= 0.0)
+	while player.state == PlayerController.State.CLIMB:
+		await physics_frame
+	check("lands on top", absf(player.global_position.y - 1.2) < 0.08, "(y %.2f)" % player.global_position.y)
+	check("keeps momentum over the top", player.horizontal_speed() > 2.5, "(%.1f m/s)" % player.horizontal_speed())
+	inp()
+	await seconds(1.0)
+
+
+func test_air_mantle_platform() -> void:
+	print("jump + mantle onto the 2 m platform")
+	var p: Vector3 = main.markers.platform_2
+	await place(Vector3(p.x, 0, p.z + 2.6))
+	inp(Vector2(0, -1), false, true)
+	var t := await wait_state(PlayerController.State.CLIMB, 1.2)
+	check("mid-air ledge at chest height mantles", t >= 0.0)
+	inp()
+	await seconds(1.2)
+	check("ends on the platform", grounded() and absf(player.global_position.y - p.y) < 0.05, "(y %.2f)" % player.global_position.y)
+
+
+func test_grab_hang_shimmy_climb() -> void:
+	print("grab, hang, shimmy, climb (3 m wall)")
+	var cw: Vector3 = main.markers.climb_wall
+	await place(cw + Vector3(0, 0, 0.6))
+	inp(Vector2(0, -1), false, true)
+	var t := 0.0
+	while player.state != PlayerController.State.LEDGE_HANG and t < 1.5:
+		await physics_frame
+		t += TICK
+	inp()
+	check("jumping at a high ledge grabs it", player.state == PlayerController.State.LEDGE_HANG, "(%.2f s)" % t)
+	await seconds(1.0)
+	check("stays hanging", player.state == PlayerController.State.LEDGE_HANG)
+	check("hangs at the right height", absf(player.global_position.y - (3.0 - cfg.hang_hand_height)) < 0.03, "(y %.2f)" % player.global_position.y)
+	var hh := hand_height()
+	check("puppet hands are on the ledge", absf(hh - 3.0) < 0.25, "(hands %.2f m)" % hh)
+	check("no NaN while hanging", not player.rig.has_invalid_state())
+
+	var x0 := player.global_position.x
+	var y0 := player.global_position.y
+	inp(Vector2(1, 0))
+	await seconds(1.0)
+	check("shimmies along the ledge", player.global_position.x - x0 > 0.8 and player.state == PlayerController.State.LEDGE_HANG,
+		"(moved %.2f m)" % (player.global_position.x - x0))
+	await seconds(4.0)
+	var wall_end := cw.x + 4.0
+	check("shimmy stops at the end of the ledge", player.global_position.x < wall_end - 0.1 and player.state == PlayerController.State.LEDGE_HANG,
+		"(x %.2f, end %.2f)" % [player.global_position.x, wall_end])
+	check("height constant while shimmying", absf(player.global_position.y - y0) < 0.02)
+
+	inp(Vector2.ZERO, false, true)
+	await physics_frame
+	inp()
+	check("jump climbs up", player.state == PlayerController.State.CLIMB)
+	await seconds(cfg.climb_up_time + 0.5)
+	check("ends on top of the wall", grounded() and absf(player.global_position.y - 3.0) < 0.05,
+		"(y %.2f, %s)" % [player.global_position.y, PlayerController.State.keys()[player.state]])
+	await seconds(0.8)
+	var pe := pelvis_error()
+	check("puppet recovers posture after climb", pe < 0.3, "(%.2f m)" % pe)
+	check("no ragdoll during ledge sequence", not PlayerController.State.RAGDOLL in _seen)
+
+
+func test_hang_drop() -> void:
+	print("drop from hang")
+	var cw: Vector3 = main.markers.climb_wall
+	await place(cw + Vector3(-1, 0, 0.6))
+	inp(Vector2(0, -1), false, true)
+	while player.state != PlayerController.State.LEDGE_HANG:
+		await physics_frame
+	inp()
+	await seconds(0.5)
+	_seen.clear()
+	inp(Vector2.ZERO, false, false, true)
+	await physics_frame
+	check("crouch lets go", player.state == PlayerController.State.AIR)
+	await seconds(1.0)
+	inp()
+	check("drops to the ground without re-grabbing", grounded() and player.global_position.y < 0.05
+		and not PlayerController.State.LEDGE_HANG in _seen, "(y %.2f)" % player.global_position.y)
+
+
+func test_no_grab_out_of_reach() -> void:
+	print("ledge out of reach")
+	var p: Vector3 = main.markers.platform_10
+	await place(Vector3(p.x, 0, p.z + 2.6))
+	inp(Vector2(0, -1), false, true)
+	await seconds(1.5)
+	inp()
+	check("10 m wall can't be grabbed from the ground", not PlayerController.State.LEDGE_HANG in _seen
+		and not PlayerController.State.CLIMB in _seen)
 	await seconds(0.5)
 
 
