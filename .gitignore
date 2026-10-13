@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Godot
+.godot/
+*.translation
+export_presets.cfg
