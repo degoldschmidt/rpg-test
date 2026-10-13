@@ -3,6 +3,15 @@ class_name LevelUtil
 
 static var _grid_tex: Texture2D
 static var _mats := {}
+static var _prop_material: PhysicsMaterial
+
+
+## Props slide rather than tip when pushed (default friction 1.0 tips a cube before it slides).
+static func prop_material() -> PhysicsMaterial:
+	if _prop_material == null:
+		_prop_material = PhysicsMaterial.new()
+		_prop_material.friction = 0.55
+	return _prop_material
 
 
 static func grid_texture() -> Texture2D:
@@ -92,6 +101,7 @@ static func dynamic_box(parent: Node, size: Vector3, pos: Vector3, mass: float, 
 	rb.mass = mass
 	rb.collision_layer = InputSetup.LAYER_PROPS
 	rb.collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PUPPET | InputSetup.LAYER_PROPS | InputSetup.LAYER_HAZARDS | InputSetup.LAYER_DETAIL
+	rb.physics_material_override = prop_material()
 	var cs := CollisionShape3D.new()
 	var sh := BoxShape3D.new()
 	sh.size = size
@@ -100,6 +110,29 @@ static func dynamic_box(parent: Node, size: Vector3, pos: Vector3, mass: float, 
 	var mi := MeshInstance3D.new()
 	var m := BoxMesh.new()
 	m.size = size
+	mi.mesh = m
+	mi.material_override = mat(color)
+	rb.add_child(mi)
+	parent.add_child(rb)
+	rb.global_position = pos
+	return rb
+
+
+static func dynamic_sphere(parent: Node, radius: float, pos: Vector3, mass: float, color: Color) -> RigidBody3D:
+	var rb := RigidBody3D.new()
+	rb.mass = mass
+	rb.collision_layer = InputSetup.LAYER_PROPS
+	rb.collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PUPPET | InputSetup.LAYER_PROPS | InputSetup.LAYER_HAZARDS | InputSetup.LAYER_DETAIL
+	rb.angular_damp = 0.5
+	var cs := CollisionShape3D.new()
+	var sh := SphereShape3D.new()
+	sh.radius = radius
+	cs.shape = sh
+	rb.add_child(cs)
+	var mi := MeshInstance3D.new()
+	var m := SphereMesh.new()
+	m.radius = radius
+	m.height = radius * 2.0
 	mi.mesh = m
 	mi.material_override = mat(color)
 	rb.add_child(mi)

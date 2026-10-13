@@ -6,7 +6,7 @@ extends CharacterBody3D
 
 signal state_changed(old_state: State, new_state: State)
 
-enum State { IDLE, WALK, RUN, CROUCH, SLIDE, AIR, ROLL, STUMBLE, RAGDOLL, GET_UP, LEDGE_HANG, CLIMB }
+enum State { IDLE, WALK, RUN, CROUCH, SLIDE, AIR, ROLL, STUMBLE, RAGDOLL, GET_UP, LEDGE_HANG, CLIMB, GRAB }
 
 const CROUCH_STATES: Array[State] = [State.CROUCH, State.SLIDE, State.ROLL, State.CLIMB]
 const JUMP_STATES: Array[State] = [State.IDLE, State.WALK, State.RUN, State.CROUCH, State.SLIDE]
@@ -24,6 +24,7 @@ var use_external_input := false
 var external_input := {"move": Vector2.ZERO, "jump": false, "crouch": false, "run": false, "roll": false}
 
 var rig: RagdollRig
+var skin: HumanoidSkin
 var pose_gen := PoseGenerator.new()
 
 ## Debug readouts.
@@ -54,6 +55,12 @@ var _climb_time := 0.5
 var _climb_from_hang := false
 var _climb_exit_speed := 0.0
 var _shimmy := 0.0
+var _carried: RigidBody3D           ## lifted object
+var _grabbed: RigidBody3D           ## pushed / pulled object (GRAB state)
+var _grab_local := Vector3.ZERO     ## grab point in the object's frame
+var _grab_normal_local := Vector3.ZERO
+var _push_amount := 0.0
+var _released: Array = []           ## [{body, t}] collision exceptions to restore
 
 
 func _ready() -> void:
@@ -81,6 +88,11 @@ func _ready() -> void:
 	rig.limb_hit_threshold = config.limb_hit_threshold
 	add_child(rig)
 	rig.build(root_transform(), body_color)
+	skin = HumanoidSkin.new()
+	skin.name = "Skin"
+	rig.add_child(skin)
+	skin.setup(rig)
+	rig.set_bodies_visible(false)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -93,6 +105,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			enter_ragdoll()
 	elif event.is_action_pressed("reset_player"):
 		reset()
+	elif event.is_action_pressed("toggle_debug_bodies"):
+		skin.visible = not skin.visible
+		rig.set_bodies_visible(not skin.visible)
 
 
 func root_transform() -> Transform3D:
@@ -135,17 +150,24 @@ func _physics_process(dt: float) -> void:
 			_update_hang(dt)
 		State.CLIMB:
 			_update_climb(dt)
+		State.GRAB:
+			_update_grab(dt)
 		_:
 			_update_locomotion(dt)
+	_update_objects(dt)
 	_update_puppet(dt)
 
 
 func _read_input() -> Dictionary:
 	if use_external_input:
-		var d := external_input.duplicate()
+		var d := {"move": Vector2.ZERO, "jump": false, "crouch": false, "run": false, "roll": false,
+			"interact": false, "throw": false}
+		d.merge(external_input, true)
 		d["jump_pressed"] = d.get("jump", false) and not _prev_ext.get("jump", false)
 		d["roll_pressed"] = d.get("roll", false) and not _prev_ext.get("roll", false)
 		d["crouch_pressed"] = d.get("crouch", false) and not _prev_ext.get("crouch", false)
+		d["interact_pressed"] = d.get("interact", false) and not _prev_ext.get("interact", false)
+		d["throw_pressed"] = d.get("throw", false) and not _prev_ext.get("throw", false)
 		_prev_ext = external_input.duplicate()
 		return d
 	return {
@@ -157,6 +179,8 @@ func _read_input() -> Dictionary:
 		"run": Input.is_action_pressed("run"),
 		"roll": Input.is_action_pressed("roll"),
 		"roll_pressed": Input.is_action_just_pressed("roll"),
+		"interact_pressed": Input.is_action_just_pressed("interact"),
+		"throw_pressed": Input.is_action_just_pressed("throw"),
 	}
 
 
@@ -202,9 +226,9 @@ func _update_locomotion(dt: float) -> void:
 		_:
 			if not on_floor and _coyote <= 0.0:
 				_set_state(State.AIR)
-			elif _in.roll_pressed and _roll_cooldown <= 0.0:
+			elif _in.roll_pressed and _roll_cooldown <= 0.0 and _carried == null:
 				_start_roll()
-			elif _in.crouch_pressed and hs >= cfg.slide_min_speed:
+			elif _in.crouch_pressed and hs >= cfg.slide_min_speed and _carried == null:
 				_set_state(State.SLIDE)
 				velocity += Vector3(velocity.x, 0, velocity.z).normalized() * cfg.slide_boost
 			else:
@@ -214,7 +238,7 @@ func _update_locomotion(dt: float) -> void:
 
 	if _jump_buffer > 0.0 and _coyote > 0.0 and state in JUMP_STATES:
 		# Jump facing a chest-high ledge = mantle instead.
-		var ledge := _find_ledge(_probe_dir(wish), global_position)
+		var ledge := {} if _carried else _find_ledge(_probe_dir(wish), global_position)
 		if not ledge.is_empty() and ledge.height >= cfg.mantle_min_height and ledge.height <= cfg.mantle_max_height:
 			_start_climb(ledge, false)
 			return
@@ -264,7 +288,7 @@ func _update_locomotion(dt: float) -> void:
 
 	if was_air and is_on_floor() and state == State.AIR:
 		_on_land(-pre_vy)
-	elif state == State.AIR:
+	elif state == State.AIR and _carried == null:
 		_try_air_ledge(wish)
 
 	_update_facing(dt)
@@ -302,7 +326,7 @@ func _ground_velocity(hv: Vector3, wish: Vector3, dt: float) -> Vector3:
 	var k := clampf(speed / cfg.run_speed, 0.0, 1.0)
 	var tr := lerpf(cfg.turn_rate_slow, cfg.turn_rate_fast, k)
 	dir = dir.rotated(Vector3.UP, clampf(ang, -tr * dt, tr * dt))
-	var tgt := target_speed * amt
+	var tgt := target_speed * amt * carry_speed_factor()
 	if speed < tgt:
 		var a := cfg.walk_accel if speed < cfg.walk_speed else cfg.run_accel
 		speed = minf(speed + a * dt, tgt)
@@ -578,11 +602,255 @@ func _update_climb(dt: float) -> void:
 		_set_state(_ground_state(_wish_dir()))
 
 
+# ---------------------------------------------------------------- objects
+
+func carry_speed_factor() -> float:
+	if _carried == null:
+		return 1.0
+	return 1.0 - config.carry_speed_penalty * clampf(_carried.mass / config.lift_max_mass, 0.0, 1.0)
+
+
+func is_carrying() -> RigidBody3D:
+	return _carried
+
+
+func is_grabbing() -> RigidBody3D:
+	return _grabbed
+
+
+## Closest movable prop in reach in front of the chest, or null.
+func find_interactable() -> RigidBody3D:
+	var sh := SphereShape3D.new()
+	sh.radius = 0.55
+	var params := PhysicsShapeQueryParameters3D.new()
+	params.shape = sh
+	params.transform = Transform3D(Basis(), global_position + Vector3.UP * 0.8 + facing_dir() * config.interact_range * 0.6)
+	params.collision_mask = InputSetup.LAYER_PROPS
+	var best: RigidBody3D = null
+	var best_d := INF
+	for r in get_world_3d().direct_space_state.intersect_shape(params, 8):
+		var body := r.collider as RigidBody3D
+		if body == null or body.freeze:
+			continue
+		var d := body.global_position.distance_to(global_position + Vector3.UP * 0.8)
+		if d < best_d:
+			best_d = d
+			best = body
+	return best
+
+
+## What pressing interact would do right now (for the HUD).
+func interact_hint() -> String:
+	if _carried:
+		return "E: drop   F: throw"
+	if _grabbed:
+		return "W/S: push / pull   E: let go"
+	if not state in [State.IDLE, State.WALK, State.RUN, State.CROUCH]:
+		return ""
+	var b := find_interactable()
+	if b == null:
+		return ""
+	if b.mass <= config.lift_max_mass:
+		return "E: lift (%.0f kg)" % b.mass
+	if b.mass <= config.push_max_mass:
+		return "E: grab to push / pull (%.0f kg)" % b.mass
+	return "Too heavy (%.0f kg)" % b.mass
+
+
+static func object_extents(body: RigidBody3D) -> Vector3:
+	for c in body.get_children():
+		if c is CollisionShape3D:
+			var sh: Shape3D = (c as CollisionShape3D).shape
+			if sh is BoxShape3D:
+				return (sh as BoxShape3D).size * 0.5
+			if sh is SphereShape3D:
+				return Vector3.ONE * (sh as SphereShape3D).radius
+			if sh is CylinderShape3D:
+				var cy := sh as CylinderShape3D
+				return Vector3(cy.radius, cy.height * 0.5, cy.radius)
+	return Vector3.ONE * 0.25
+
+
+func _update_objects(dt: float) -> void:
+	for i in range(_released.size() - 1, -1, -1):
+		var r: Dictionary = _released[i]
+		r.t -= dt
+		if r.t <= 0.0 or not is_instance_valid(r.body):
+			if is_instance_valid(r.body):
+				_set_exceptions(r.body, false)
+			_released.remove_at(i)
+	if state == State.RAGDOLL:
+		return
+	if _carried and not is_instance_valid(_carried):
+		_carried = null
+	if _carried:
+		if _in.get("throw_pressed", false):
+			throw_carried()
+		elif _in.get("interact_pressed", false):
+			_in["interact_pressed"] = false
+			release_objects()
+		else:
+			_hold_carried(dt)
+		return
+	if _in.get("interact_pressed", false) and state in [State.IDLE, State.WALK, State.RUN, State.CROUCH]:
+		var b := find_interactable()
+		if b and b.mass <= config.lift_max_mass:
+			_start_carry(b)
+		elif b and b.mass <= config.push_max_mass:
+			_start_grab(b)
+
+
+func _set_exceptions(body: RigidBody3D, on: bool) -> void:
+	for pb: PuppetBone in rig.bones.values():
+		if on:
+			body.add_collision_exception_with(pb)
+		else:
+			body.remove_collision_exception_with(pb)
+	if on:
+		body.add_collision_exception_with(self)
+	else:
+		body.remove_collision_exception_with(self)
+
+
+func _start_carry(body: RigidBody3D) -> void:
+	_carried = body
+	_set_exceptions(body, true)
+	for i in range(_released.size() - 1, -1, -1):
+		if _released[i].body == body:
+			_released.remove_at(i)
+
+
+func _hold_target() -> Vector3:
+	var ext := object_extents(_carried)
+	return global_position + Vector3.UP * config.carry_height + facing_dir() * (config.capsule_radius + 0.12 + ext.z)
+
+
+func _hold_carried(dt: float) -> void:
+	var b := _carried
+	var to := _hold_target() - b.global_position
+	if to.length() > 1.2:
+		release_objects()  # snagged on something
+		return
+	var want_v := velocity + to * 14.0
+	var f := (want_v - b.linear_velocity) * b.mass / dt * 0.5
+	f += Vector3.UP * b.mass * float(ProjectSettings.get_setting("physics/3d/default_gravity"))
+	b.apply_central_force(f.limit_length(config.lift_strength))
+	# Keep it upright and turned with the character.
+	var want := Basis(Vector3.UP, facing_yaw).get_rotation_quaternion()
+	var q := (want * b.global_basis.get_rotation_quaternion().inverse()).normalized()
+	if q.w < 0.0:
+		q = -q
+	var v := Vector3(q.x, q.y, q.z)
+	b.angular_velocity = b.angular_velocity.lerp(v * 2.0 * 8.0, 0.3)
+
+
+func throw_carried() -> void:
+	var b := _carried
+	if b == null:
+		return
+	release_objects()
+	var k := clampf(sqrt(config.throw_ref_mass / maxf(b.mass, 0.1)), 0.35, 1.0)
+	b.linear_velocity = velocity + (facing_dir() * config.throw_speed + Vector3.UP * 3.0) * k
+
+
+## Drops / lets go of anything held. Collisions with the body come back shortly after.
+func release_objects() -> void:
+	if _carried and is_instance_valid(_carried):
+		_released.append({"body": _carried, "t": 0.4})
+	_carried = null
+	rig.hit_ignore = null
+	if _grabbed:
+		_grabbed = null
+		if state == State.GRAB:
+			_set_state(_ground_state(_wish_dir()))
+
+
+func _start_grab(body: RigidBody3D) -> void:
+	var ext := object_extents(body)
+	var top := body.global_position.y + ext.y
+	var h := clampf(top - global_position.y - 0.15, 0.4, 1.15)
+	var from := global_position + Vector3.UP * h
+	var to := Vector3(body.global_position.x, from.y, body.global_position.z)
+	to += (to - from).normalized() * 0.5
+	var q := PhysicsRayQueryParameters3D.create(from, to, InputSetup.LAYER_PROPS)
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if hit.is_empty() or hit.collider != body:
+		return
+	var n := Vector3(hit.normal.x, 0.0, hit.normal.z)
+	if n.length() < 0.5:
+		return
+	n = n.normalized()
+	_grabbed = body
+	rig.hit_ignore = body
+	_grab_local = body.to_local(hit.position)
+	_grab_normal_local = body.global_basis.inverse() * n
+	_face_wall(n)
+	_push_amount = 0.0
+	_set_state(State.GRAB)
+
+
+func _update_grab(dt: float) -> void:
+	var cfg := config
+	var b := _grabbed
+	if b == null or not is_instance_valid(b) or _in.interact_pressed or _in.jump_pressed or _in.crouch_pressed:
+		_in["interact_pressed"] = false  # consumed: don't re-grab this tick
+		release_objects()
+		return
+	var gp := b.to_global(_grab_local)
+	var n := b.global_basis * _grab_normal_local
+	n.y = 0.0
+	if n.length() < 0.3 or absf(gp.y - global_position.y - 0.8) > 0.9:
+		release_objects()  # tipped over / fell away
+		return
+	n = n.normalized()
+	facing_yaw = rotate_toward(facing_yaw, atan2(n.x, n.z), 6.0 * dt)
+	var axis := -n
+	var amount := clampf(_wish_dir().dot(axis), -1.0, 1.0)
+	if absf(amount) < 0.2:
+		amount = 0.0
+	# Can't pull into a wall.
+	if amount < 0.0 and test_move(global_transform, axis * amount * 0.1):
+		amount = 0.0
+	_push_amount = lerpf(_push_amount, amount, 1.0 - exp(-8.0 * dt))
+	var spd := lerpf(cfg.push_speed_light, cfg.push_speed_heavy, clampf(b.mass / cfg.push_max_mass, 0.0, 1.0))
+	var bv := b.linear_velocity
+	var f := (axis * amount * spd - Vector3(bv.x, 0.0, bv.z)) * b.mass / dt * 0.5
+	f.y = 0.0
+	# Applied low on the object so friction doesn't tip it over.
+	b.apply_force(f.limit_length(cfg.push_strength), b.global_basis * Vector3(0, -object_extents(b).y * 0.6, 0))
+
+	var desired := gp + n * cfg.grab_gap
+	var flat := Vector3(desired.x - global_position.x, 0.0, desired.z - global_position.z)
+	var vy := 0.0 if is_on_floor() else velocity.y - cfg.gravity * dt
+	velocity = (flat / dt).limit_length(5.0) + Vector3.UP * vy
+	move_and_slide()
+	var err := Vector3(desired.x - global_position.x, 0.0, desired.z - global_position.z).length()
+	if err > cfg.grab_break_distance:
+		release_objects()
+	rig.muscle = move_toward(rig.muscle, 1.0, dt * 2.0)
+
+
+## Palm targets for the puppet's hand IK, or {} when the hands are free.
+func _hand_targets() -> Dictionary:
+	var right := facing_dir().cross(Vector3.UP)
+	if _carried and is_instance_valid(_carried):
+		var ext := object_extents(_carried)
+		var c := _carried.global_position
+		return {&"l": c - right * (ext.x + 0.03), &"r": c + right * (ext.x + 0.03)}
+	if _grabbed and is_instance_valid(_grabbed) and state == State.GRAB:
+		var gp := _grabbed.to_global(_grab_local)
+		var n := (_grabbed.global_basis * _grab_normal_local).normalized()
+		var p := gp + n * 0.02
+		return {&"l": p - right * 0.2, &"r": p + right * 0.2}
+	return {}
+
+
 # ---------------------------------------------------------------- ragdoll
 
 ## Hand control to the physical puppet. Optional velocity kick at a point (hazards, combat).
 func enter_ragdoll(dv := Vector3.ZERO, point := Vector3.ZERO) -> void:
 	if state != State.RAGDOLL:
+		release_objects()
 		_set_state(State.RAGDOLL)
 		_col.disabled = true
 		rig.muscle = 0.0
@@ -664,6 +932,8 @@ func _update_puppet(dt: float) -> void:
 			mode = &"hang"
 		State.CLIMB:
 			mode = &"climb"
+		State.GRAB:
+			mode = &"ground"
 	var mv: Vector2 = _in.get("move", Vector2.ZERO)
 	var ctx := {
 		"mode": mode,
@@ -680,7 +950,11 @@ func _update_puppet(dt: float) -> void:
 		"climb_t": clampf(state_time / _climb_time, 0.0, 1.0),
 		"climb_from_hang": _climb_from_hang,
 		"shimmy": _shimmy,
+		"arm_mode": &"push" if state == State.GRAB else (&"carry" if _carried else &""),
+		"push_amount": _push_amount,
 	}
+	var hands := _hand_targets()
+	ctx["hand_targets"] = hands
 	var pose := pose_gen.compute(ctx, dt)
 	rig.step(dt, root_transform(), velocity if state != State.RAGDOLL else Vector3.ZERO, pose)
 
@@ -708,6 +982,7 @@ func teleport(pos: Vector3, yaw := 0.0) -> void:
 	_lean = Vector2.ZERO
 	_ledge = {}
 	_grab_cooldown = 0.0
+	release_objects()
 	state = State.IDLE
 	state_time = 0.0
 	rig.muscle = 1.0

@@ -18,15 +18,23 @@ It follows its animation tightly, wobbles when hit, and collapses into a full ra
 | Jump (hold for height) | Space | A |
 | Crouch (while running: slide) | Ctrl or C | B |
 | Forward roll | Q | X |
+| Lift / drop, or grab to push and pull | E | RB |
+| Throw a carried object | F | LB |
 | Toggle ragdoll | G | Y |
 | Reset player | R | Back |
 | Camera | Mouse (click to capture, Esc to release) | Right stick |
 | Toggle help | F1 | |
+| Show physics bodies instead of the mesh | F2 | |
 
 **Ledges:**
 - **Mantle:** jump facing a chest-high ledge (0.6–1.6 m) and you climb straight onto it. A running jump into a ledge keeps some of your speed over the top.
 - **Grab:** jump at a higher ledge (up to about 3.6 m from the ground) to grab it and hang.
 - **While hanging:** A/D shimmies along the ledge and stops at its end. Jump or W climbs up. Crouch or S drops off.
+
+**Objects** (the HUD shows what E will do):
+- **Lift:** objects up to 25 kg are lifted and carried in both hands. Carrying slows you in proportion to the weight. E drops the object; F throws it, and lighter objects fly further.
+- **Push / pull:** objects from 25 to 300 kg are grabbed by the face you're looking at. W pushes and S pulls, and heavier objects move more slowly. E, jump or crouch lets go. Pulling stops at walls behind you.
+- Anything heavier than 300 kg can't be moved.
 
 **Tip:** press roll just before landing from a big drop to roll it out instead of ragdolling.
 
@@ -38,6 +46,7 @@ The level is built in code by `scripts/main.gd`. It contains:
 - **Landing platforms:** 2, 5 and 10 m high, each with a ramp up.
 - **Crouch tunnel:** ceiling at 1.5 m.
 - **Jump gaps:** 2.5, 3.5 and 4.5 m.
+- **Props yard:** a 4 kg box, an 18 kg sack, a 3 kg ball, an 80 kg crate, a 250 kg block and a 600 kg monolith.
 - **Climbing area:** a 1.2 m mantle block, and an 8 m wide, 3 m tall wall to hang, shimmy and climb, with a higher ledge stacked on top.
 - **Crate pyramid:** physics props.
 - **Hazards:** a swinging log, a rotating sweeper bar (jump it), a red bumper, and a ramp that drops boulders.
@@ -58,6 +67,14 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
 ```
 
 - **Proxy.** The `CharacterBody3D` handles all movement, so controls stay deterministic and responsive. This is the setup shipped games use. Balancing a character with physics alone is fragile.
+- **Skin.** `HumanoidSkin` drives a skinned humanoid mesh from the puppet.
+  - Each mapped skeleton bone takes its world rotation from its physics body.
+  - Limb bones are aligned once from the model's A-pose to the puppet's rest pose.
+  - Limb and neck bone heads are pinned to the puppet's joint pivots, so hands and feet are exactly where the physics contacts are. The spine is rebuilt down the hierarchy from the hips.
+  - The puppet's joint positions match the model's proportions, so pinning doesn't visibly stretch the mesh.
+  - Fingers, toes, shoulders and pelvis bones keep their rest pose relative to their parent.
+  - F2 shows the physics capsules instead.
+  - The model is the CC0 "3D Male Base Mesh" (Rigify bone names). Any mesh with the same bone names can replace it through `model_scene`. See `assets/characters/LICENSE.md`.
 - **Puppet.** Physical bodies follow the proxy through velocity-based muscles. Arms swing with inertia, the body banks into turns, and props shove limbs around.
 - **Muscle.**
   - `muscle = 1`: the puppet looks animated.
@@ -82,6 +99,11 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
   - `LEDGE_HANG` pins the capsule under the edge and re-probes the ledge as it shimmies. `CLIMB` moves the capsule up first, then over the edge.
   - The puppet blends through hang → pull → crouch → stand key poses.
   - All tunables are in the "Ledges" group of `MovementConfig`.
+- **Objects** (in `player_controller.gd`, under "objects").
+  - Carried objects are driven toward a hold point by a strength-limited force with gravity compensation. Collisions with the body are switched off while held and restored shortly after release.
+  - Pushed or pulled objects get a strength-limited horizontal force applied low on the object, so friction doesn't tip it. The capsule follows the grab point, and contacts with the held object never count as hits.
+  - Hand IK (two-bone, same solver as the legs) puts the palms on the object's sides or face.
+  - All tunables are in the "Objects" group of `MovementConfig`.
 - **Stairs.** The capsule rides a smooth invisible ramp through the step nosings (`proxy_only` layer). The treads are real colliders that only the puppet and foot IK see (`detail` layer), so the movement stays smooth while the feet land on each step.
 
 ### Physics layers
@@ -118,12 +140,14 @@ Muscle stiffness gains are at the top of `scripts/player/ragdoll_rig.gd`. Per-bo
 godot --headless --fixed-fps 120 --path . -s tests/run_tests.gd
 ```
 
-The suite has 81 deterministic gameplay checks. It covers:
+The suite has 109 deterministic gameplay checks. It covers:
 - idle stability and joint-limit sanity
 - walk and run acceleration and inertia
 - skid
 - variable jump height
 - crouch under the tunnel ceiling
+- skinned mesh tracking the puppet: joint positions and limb directions while idle, running and ragdolled
+- objects: lift, carry while running, throw, drop, push and pull the crate, the heavier block being slower, the monolith being too heavy
 - ledges: ground, running and mid-air mantles; grab, hang height and hand placement; shimmy and stopping at the ledge end; climbing up; dropping off without re-grabbing; out-of-reach walls
 - foot IK on a 30° slope and on stairs (feet on the surface and tilted to it, pelvis drop, stair climb without sinking)
 - slide distance
@@ -157,6 +181,6 @@ tests/run_tests.gd
 
 ## Next steps toward the RPG
 
-- Swap the capsule puppet for a skinned humanoid. Drive its `Skeleton3D` bones from the puppet bodies, or use `PhysicalBoneSimulator3D`. Replace the procedural poses with authored animations sampled as targets.
+- Replace the procedural poses with authored animations, sampled as puppet targets, and give the character clothing and textures.
 - Add combat hit reactions through `apply_hit`.
 - Move hot paths to C# or GDExtension if profiling shows a need. With many NPCs, put distant characters on a cheaper kinematic-only LOD.

@@ -15,6 +15,7 @@ var markers := {
 	"stairs": Vector3(-32, 0, -1),
 	"mantle_block": Vector3(20, 0, -34),  # front face (facing +Z) of a 1.2 m block
 	"climb_wall": Vector3(30, 0, -33.5),  # front face of an 8 m wide, 3 m tall wall
+	"objects": Vector3(-14, 0, 10),       # props yard: liftable, pushable and too-heavy objects
 	"log": Vector3(0, 0, 35),
 	"sweeper": Vector3(14, 0, 35),
 	"bumper": Vector3(-10, 0, 30),
@@ -24,6 +25,7 @@ var player: PlayerController
 var camera_rig: CameraRig
 var hud: DebugHud
 var level: Node3D
+var props := {}
 
 
 func _ready() -> void:
@@ -139,6 +141,17 @@ func _build_level() -> void:
 	for layer in 4:
 		for i in 4 - layer:
 			LevelUtil.dynamic_box(level, Vector3.ONE * s, c0 + Vector3((i - (3 - layer) * 0.5) * (s + 0.02), s * 0.5 + layer * s, 0), 6.0, orange)
+
+	# Props yard (row along X, all faces toward +Z): small box 4 kg, sack 18 kg, ball 3 kg,
+	# crate 80 kg, block 250 kg, monolith 600 kg (too heavy).
+	var o: Vector3 = markers.objects
+	props = {}
+	props.small_box = L.dynamic_box(level, Vector3.ONE * 0.45, o + Vector3(0, 0.225, 0), 4.0, orange)
+	props.sack = L.dynamic_box(level, Vector3(0.6, 0.5, 0.45), o + Vector3(-3, 0.25, 0), 18.0, green)
+	props.ball = L.dynamic_sphere(level, 0.3, o + Vector3(-6, 0.3, 0), 3.0, blue)
+	props.crate = L.dynamic_box(level, Vector3.ONE * 1.2, o + Vector3(4, 0.6, 0), 80.0, orange)
+	props.block = L.dynamic_box(level, Vector3.ONE * 1.5, o + Vector3(8, 0.75, -0.15), 250.0, grey)
+	props.monolith = L.dynamic_box(level, Vector3(1.6, 2.2, 1.6), o + Vector3(12, 1.1, -0.2), 600.0, Color(0.25, 0.25, 0.28))
 
 	# Hazards.
 	var log := SwingingLog.new()

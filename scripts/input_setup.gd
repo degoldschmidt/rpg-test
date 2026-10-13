@@ -22,6 +22,9 @@ static func ensure_actions() -> void:
 	_key("toggle_ragdoll", [KEY_G])
 	_key("reset_player", [KEY_R])
 	_key("toggle_help", [KEY_F1])
+	_key("toggle_debug_bodies", [KEY_F2])
+	_key("interact", [KEY_E])
+	_key("throw", [KEY_F])
 
 	_axis("move_left", JOY_AXIS_LEFT_X, -1.0)
 	_axis("move_right", JOY_AXIS_LEFT_X, 1.0)
@@ -38,6 +41,8 @@ static func ensure_actions() -> void:
 	_button("run", JOY_BUTTON_LEFT_STICK)
 	_button("toggle_ragdoll", JOY_BUTTON_Y)
 	_button("reset_player", JOY_BUTTON_BACK)
+	_button("interact", JOY_BUTTON_RIGHT_SHOULDER)
+	_button("throw", JOY_BUTTON_LEFT_SHOULDER)
 
 
 static func _add(action: StringName) -> void:
