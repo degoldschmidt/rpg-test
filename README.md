@@ -63,16 +63,26 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
   - Summed contact hits from props or hazards above `ragdoll_hit_threshold`. Hit strength is relative speed × mass.
   - `apply_hit(dv, point)`, used by the bumper and available for future combat.
 - **Get-up.** Once the body settles, the proxy snaps under the pelvis and muscles ramp back up to a crouch, then to standing.
+- **Foot IK** (in `ragdoll_rig.gd`, after FK). Each foot raycasts down to the ground under it.
+  - The pelvis drops for the lower foot.
+  - An analytic two-bone IK re-aims thigh and shin so each ankle lands at its own ground height, keeping the knee's bend direction.
+  - Each foot tilts to the surface normal.
+  - Results are smoothed to hide pops at step edges.
+  - IK is on while grounded (ground, crouch, stumble, get-up), partly on during a slide, and off in the air or a roll.
+  - Tunables: `ik_probe_up`, `ik_max_drop`, `ik_smoothing`.
+- **Stairs.** The capsule rides a smooth invisible ramp through the step nosings (`proxy_only` layer). The treads are real colliders that only the puppet and foot IK see (`detail` layer), so the movement stays smooth while the feet land on each step.
 
 ### Physics layers
 
 | Layer | Used by |
 |---|---|
 | 1 world | static level |
-| 2 player_proxy | the movement capsule; collides only with world and props |
-| 3 puppet | ragdoll bodies; collide with world, props and hazards, never with each other or the proxy |
+| 2 player_proxy | the movement capsule; collides with world, props and proxy_only |
+| 3 puppet | ragdoll bodies; collide with world, props, hazards and detail, never with each other or the proxy |
 | 4 props | crates, boulders |
 | 5 hazards | kinematic log and sweeper |
+| 6 proxy_only | collision only the capsule sees (smooth stair ramp) |
+| 7 detail | collision only the puppet and foot IK see (stair treads) |
 
 ## Tuning
 
@@ -96,12 +106,13 @@ Muscle stiffness gains are at the top of `scripts/player/ragdoll_rig.gd`. Per-bo
 godot --headless --fixed-fps 120 --path . -s tests/run_tests.gd
 ```
 
-The suite has 45 deterministic gameplay checks. It covers:
+The suite has 57 deterministic gameplay checks. It covers:
 - idle stability and joint-limit sanity
 - walk and run acceleration and inertia
 - skid
 - variable jump height
 - crouch under the tunnel ceiling
+- foot IK on a 30° slope and on stairs (feet on the surface and tilted to it, pelvis drop, stair climb without sinking)
 - slide distance
 - roll tumble
 - stumble landing
@@ -134,6 +145,5 @@ tests/run_tests.gd
 ## Next steps toward the RPG
 
 - Swap the capsule puppet for a skinned humanoid. Drive its `Skeleton3D` bones from the puppet bodies, or use `PhysicalBoneSimulator3D`. Replace the procedural poses with authored animations sampled as targets.
-- Add foot IK for slopes and stairs.
 - Add ledge grab and mantle, plus combat hit reactions through `apply_hit`.
 - Move hot paths to C# or GDExtension if profiling shows a need. With many NPCs, put distant characters on a cheaper kinematic-only LOD.

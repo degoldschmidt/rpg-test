@@ -32,6 +32,9 @@ func _run() -> void:
 	await test_skid()
 	await test_jump_heights()
 	await test_crouch_and_tunnel()
+	await test_foot_ik_slope()
+	await test_foot_ik_stairs()
+	await test_climb_stairs()
 	await test_slide()
 	await test_roll()
 	await test_stumble_landing()
@@ -62,9 +65,9 @@ func inp(move := Vector2.ZERO, run := false, jump := false, crouch := false, rol
 	player.external_input = {"move": move, "run": run, "jump": jump, "crouch": crouch, "roll": roll}
 
 
-func place(pos: Vector3, settle := 0.4) -> void:
+func place(pos: Vector3, settle := 0.4, yaw := 0.0) -> void:
 	inp()
-	player.teleport(pos, 0.0)
+	player.teleport(pos, yaw)
 	await seconds(settle)
 	_seen.clear()
 
@@ -91,6 +94,25 @@ func wait_state(s: PlayerController.State, timeout: float) -> float:
 		await physics_frame
 		t += TICK
 	return -1.0
+
+
+## Height of the foot body center above the ground directly beneath it (rest pose: 0.04).
+func foot_clearance(side: String) -> float:
+	var foot: Node3D = player.rig.bones[StringName("foot_" + side)]
+	var p := foot.global_position
+	var q := PhysicsRayQueryParameters3D.create(p + Vector3.UP * 0.5, p + Vector3.DOWN * 1.5,
+		InputSetup.LAYER_WORLD | InputSetup.LAYER_DETAIL)
+	var hit := player.get_world_3d().direct_space_state.intersect_ray(q)
+	return p.y - (hit.position as Vector3).y if hit else 99.0
+
+
+func foot_alignment(side: String) -> float:
+	var foot: Node3D = player.rig.bones[StringName("foot_" + side)]
+	var p := foot.global_position
+	var q := PhysicsRayQueryParameters3D.create(p + Vector3.UP * 0.5, p + Vector3.DOWN * 1.5,
+		InputSetup.LAYER_WORLD | InputSetup.LAYER_DETAIL)
+	var hit := player.get_world_3d().direct_space_state.intersect_ray(q)
+	return foot.global_basis.y.normalized().dot(hit.normal) if hit else 0.0
 
 
 func open() -> Vector3:
@@ -228,6 +250,50 @@ func test_crouch_and_tunnel() -> void:
 	await seconds(4.5)
 	check("stands up after leaving tunnel", not player.is_crouched_shape() and player.global_position.z < t.z - 3.0,
 		"(state %s, z %.1f)" % [PlayerController.State.keys()[player.state], player.global_position.z])
+
+
+func test_foot_ik_slope() -> void:
+	print("foot IK on a 30 deg slope (standing across it)")
+	# Facing +X on a slope rising toward -Z: left foot uphill, right foot downhill.
+	await place(main.markers.ramp_30 + Vector3.UP * 0.05, 1.5, -PI * 0.5)
+	for side in ["l", "r"]:
+		var c := foot_clearance(side)
+		check("%s foot rests on the slope" % side, absf(c - 0.04) < 0.035, "(clearance %.3f m)" % c)
+		var a := foot_alignment(side)
+		check("%s foot tilts to the slope" % side, a > 0.97, "(dot %.3f)" % a)
+	var drop := player.rig.pelvis().global_position.y - player.global_position.y
+	check("pelvis lowers for the downhill leg", drop < 0.97, "(pelvis %.2f m above capsule)" % drop)
+
+
+func test_foot_ik_stairs() -> void:
+	print("foot IK standing on stairs")
+	var tread := Vector3(main.markers.stairs.x, 1.35, -2 - 5 * 0.35 - 0.175)
+	await place(tread, 1.5)
+	for side in ["l", "r"]:
+		var c := foot_clearance(side)
+		check("%s foot stands on the tread" % side, absf(c - 0.04) < 0.035, "(clearance %.3f m)" % c)
+	# Split stance across two steps.
+	await place(Vector3(main.markers.stairs.x, 1.35, -2 - 5 * 0.35), 1.5, -PI * 0.5)
+	for side in ["l", "r"]:
+		var c := foot_clearance(side)
+		check("%s foot on its own step (sideways stance)" % side, absf(c - 0.04) < 0.035, "(clearance %.3f m)" % c)
+
+
+func test_climb_stairs() -> void:
+	print("climb stairs")
+	await place(main.markers.stairs)
+	inp(Vector2(0, -1))
+	var worst_sink := 99.0
+	var peak := 0.0
+	for i in int(2.2 / TICK):
+		await physics_frame
+		worst_sink = minf(worst_sink, minf(foot_clearance("l"), foot_clearance("r")))
+		peak = maxf(peak, player.global_position.y)
+	inp()
+	check("walks up the stairs", peak > 2.3, "(peak y %.2f)" % peak)
+	check("no stumble/ragdoll on stairs", not PlayerController.State.RAGDOLL in _seen and not PlayerController.State.STUMBLE in _seen)
+	check("feet never sink into the treads", worst_sink > -0.03, "(lowest foot center %.3f m)" % worst_sink)
+	await seconds(0.5)
 
 
 func test_slide() -> void:

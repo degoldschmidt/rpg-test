@@ -6,6 +6,8 @@ const LAYER_PROXY := 2
 const LAYER_PUPPET := 4
 const LAYER_PROPS := 8
 const LAYER_HAZARDS := 16
+const LAYER_PROXY_ONLY := 32   ## collision only the movement capsule sees (smooth stair ramps)
+const LAYER_DETAIL := 64       ## collision the puppet and foot IK see, but not the capsule (stair treads)
 
 
 static func ensure_actions() -> void:

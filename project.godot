@@ -27,6 +27,8 @@ common/max_physics_steps_per_frame=12
 3d_physics/layer_3="puppet"
 3d_physics/layer_4="props"
 3d_physics/layer_5="hazards"
+3d_physics/layer_6="proxy_only"
+3d_physics/layer_7="detail"
 
 [rendering]
 

@@ -53,7 +53,7 @@ func _ready() -> void:
 	if config == null:
 		config = MovementConfig.new()
 	collision_layer = InputSetup.LAYER_PROXY
-	collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PROPS
+	collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PROPS | InputSetup.LAYER_PROXY_ONLY
 	floor_max_angle = deg_to_rad(50.0)
 	floor_snap_length = 0.35
 	floor_constant_speed = true
