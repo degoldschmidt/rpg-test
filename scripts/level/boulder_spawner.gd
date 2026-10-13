@@ -21,7 +21,7 @@ func _spawn() -> void:
 	var b := RigidBody3D.new()
 	b.mass = mass
 	b.collision_layer = InputSetup.LAYER_PROPS
-	b.collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PUPPET | InputSetup.LAYER_PROPS | InputSetup.LAYER_HAZARDS
+	b.collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PUPPET | InputSetup.LAYER_PROPS | InputSetup.LAYER_HAZARDS | InputSetup.LAYER_DETAIL
 	b.angular_damp = 0.1
 	var mat := PhysicsMaterial.new()
 	mat.friction = 0.9

@@ -11,6 +11,8 @@ var markers := {
 	"platform_5": Vector3(16, 5, -8),
 	"platform_10": Vector3(16, 10, -18),
 	"tunnel": Vector3(0, 0, -25),
+	"ramp_30": Vector3(-19, 1.5, -2 - 1.5 / tan(deg_to_rad(30.0))),
+	"stairs": Vector3(-32, 0, -1),
 	"log": Vector3(0, 0, 35),
 	"sweeper": Vector3(14, 0, 35),
 	"bumper": Vector3(-10, 0, 30),
@@ -91,12 +93,15 @@ func _build_level() -> void:
 		L.box(level, Vector3(3, h, 3), Transform3D(Basis(), Vector3(x, h * 0.5, -2 - run - 1.5)), green)
 		x -= 5.0
 
-	# Stairs: visible steps, smooth invisible ramp for the capsule.
+	# Stairs: treads collide only with the puppet / foot IK (detail layer); the capsule
+	# rides a smooth invisible ramp through the step nosings (proxy-only layer).
 	var sx := -32.0
 	for i in 12:
 		var top := (i + 1) * 0.2
-		L.box(level, Vector3(3, top, 0.35), Transform3D(Basis(), Vector3(sx, top * 0.5, -2 - i * 0.35 - 0.175)), blue, false)
-	L.ramp(level, Vector3(sx, 0, -2), Vector3(sx, 2.4, -2 - 12 * 0.35), 3.0, blue, false, 0.6)
+		L.box(level, Vector3(3, top, 0.35), Transform3D(Basis(), Vector3(sx, top * 0.5, -2 - i * 0.35 - 0.175)), blue,
+			true, InputSetup.LAYER_DETAIL if i < 11 else InputSetup.LAYER_WORLD)
+	L.ramp(level, Vector3(sx, 0, -2 + 0.35), Vector3(sx, 2.4, -2 - 11 * 0.35), 3.0, blue, false, 0.6,
+		InputSetup.LAYER_PROXY_ONLY)
 	L.box(level, Vector3(3, 2.4, 3), Transform3D(Basis(), Vector3(sx, 1.2, -2 - 12 * 0.35 - 1.5)), blue)
 
 	# Landing-test platforms (2 / 5 / 10 m) with access ramps running +X.

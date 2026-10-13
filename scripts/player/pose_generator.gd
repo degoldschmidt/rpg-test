@@ -16,6 +16,7 @@ var time := 0.0
 var _cur: Dictionary = {}
 var _root_rot := Quaternion.IDENTITY
 var _root_off := Vector3.ZERO
+var _ik_w := 0.0
 
 
 func _init() -> void:
@@ -145,6 +146,14 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 		e[&"foot_r"].x -= (e[&"thigh_r"].x + e[&"shin_r"].x + root_e.x) * 0.8
 
 	var k := 1.0 - exp(-rate * dt)
+	# Foot IK on whenever the feet are meant to be on the ground.
+	var ik_target := 0.0
+	match mode:
+		&"ground", &"crouch", &"stumble", &"get_up":
+			ik_target = 1.0
+		&"slide":
+			ik_target = 0.6
+	_ik_w = lerpf(_ik_w, ik_target, 1.0 - exp(-10.0 * dt))
 	for b in BONES:
 		_cur[b] = (_cur[b] as Quaternion).slerp(Quaternion.from_euler(e[b]), k)
 	var root_q := Quaternion.from_euler(root_e)
@@ -154,7 +163,7 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	else:
 		_root_rot = _root_rot.slerp(root_q, k)
 		_root_off = _root_off.lerp(off, k)
-	return {"bones": _cur, "root_rot": _root_rot, "root_offset": _root_off}
+	return {"bones": _cur, "root_rot": _root_rot, "root_offset": _root_off, "foot_ik": _ik_w}
 
 
 func _crouch(e: Dictionary, cr: float) -> void:
