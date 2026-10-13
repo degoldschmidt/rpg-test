@@ -49,13 +49,28 @@ extends Resource
 @export var air_mantle_max_height := 1.3 ## mid-air: ledge at most this far above the feet = mantle
 @export var grab_max_height := 2.3       ## mid-air: up to this = grab and hang
 @export var grab_min_vy := -10.0         ## falling faster than this, hands can't hold
-@export var hang_hand_height := 2.08     ## ledge height above the feet while hanging
+@export var hang_hand_height := 2.03     ## ledge height above the feet while hanging
 @export var hang_wall_gap := 0.38        ## capsule center to wall while hanging
 @export var shimmy_speed := 1.2
 @export var climb_up_time := 0.9         ## from hanging
 @export var mantle_time_low := 0.35      ## ground mantle at mantle_min_height
 @export var mantle_time_high := 0.65     ## ground mantle at mantle_max_height
 @export var regrab_cooldown := 0.5
+
+@export_group("Objects")
+@export var interact_range := 1.0        ## reach in front of the chest
+@export var lift_max_mass := 25.0        ## heavier objects can only be pushed / pulled
+@export var push_max_mass := 300.0       ## heavier objects can't be moved at all
+@export var lift_strength := 600.0       ## N, total hold force (incl. gravity compensation)
+@export var carry_height := 1.15         ## object center above the feet
+@export var carry_speed_penalty := 0.45  ## speed lost carrying lift_max_mass
+@export var throw_speed := 9.0           ## for a throw_ref_mass object
+@export var throw_ref_mass := 6.0
+@export var push_strength := 1600.0      ## N, horizontal force on a pushed / pulled object
+@export var push_speed_light := 2.2
+@export var push_speed_heavy := 0.6      ## at push_max_mass
+@export var grab_gap := 0.5              ## capsule center to grabbed face
+@export var grab_break_distance := 0.45
 
 @export_group("Landing & ragdoll")
 @export var stumble_land_speed := 14.0

@@ -47,4 +47,4 @@ func _scan_contacts(state: PhysicsDirectBodyState3D) -> void:
 		var rel := state.get_contact_collider_velocity_at_position(i) - state.get_contact_local_velocity_at_position(i)
 		var strength := absf(rel.dot(n)) * minf(other_mass, KINEMATIC_HIT_MASS)
 		if strength > 1.0:
-			rig.report_hit(self, strength)
+			rig.report_hit(self, strength, other)

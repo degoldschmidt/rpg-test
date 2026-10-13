@@ -27,6 +27,12 @@ func _run() -> void:
 	player.state_changed.connect(func(_o, n): _seen.append(n))
 
 	await test_idle_stability()
+	await test_skin_follows_puppet()
+	await test_lift_carry_throw()
+	await test_lift_and_drop()
+	await test_push_and_pull_crate()
+	await test_heavy_block_is_slower()
+	await test_too_heavy()
 	await test_walk_momentum()
 	await test_run_momentum()
 	await test_skid()
@@ -67,8 +73,16 @@ func seconds(s: float) -> void:
 	await frames(int(round(s / TICK)))
 
 
-func inp(move := Vector2.ZERO, run := false, jump := false, crouch := false, roll := false) -> void:
-	player.external_input = {"move": move, "run": run, "jump": jump, "crouch": crouch, "roll": roll}
+func inp(move := Vector2.ZERO, run := false, jump := false, crouch := false, roll := false,
+		interact := false, throw := false) -> void:
+	player.external_input = {"move": move, "run": run, "jump": jump, "crouch": crouch, "roll": roll,
+		"interact": interact, "throw": throw}
+
+
+func press_interact() -> void:
+	inp(Vector2.ZERO, false, false, false, false, true)
+	await physics_frame
+	inp()
 
 
 func place(pos: Vector3, settle := 0.4, yaw := 0.0) -> void:
@@ -102,7 +116,7 @@ func wait_state(s: PlayerController.State, timeout: float) -> float:
 	return -1.0
 
 
-## Height of the foot body center above the ground directly beneath it (rest pose: 0.04).
+## Height of the foot body center above the ground directly beneath it (rest pose: 0.035).
 func foot_clearance(side: String) -> float:
 	var foot: Node3D = player.rig.bones[StringName("foot_" + side)]
 	var p := foot.global_position
@@ -152,6 +166,179 @@ func test_idle_stability() -> void:
 	check("crouch bends the knee (joint limits ok)", knee > 1.0, "(%.2f rad)" % knee)
 	var shin_fwd := shin.global_basis.y.dot(Vector3.FORWARD)
 	check("knee bends the right way (shin top tilts forward)", shin_fwd > 0.3, "(%.2f)" % shin_fwd)
+
+
+## World position of a puppet joint pivot.
+func puppet_pivot(bone: StringName) -> Vector3:
+	var b: PuppetBone = player.rig.bones[bone]
+	return b.global_transform * (b.def.pivot - b.def.center)
+
+
+func skin_error() -> float:
+	player.skin.update_pose()  # bodies were just synced from the last physics step
+	var pairs := {"hand.L": &"hand_l", "hand.R": &"hand_r", "foot.L": &"foot_l", "foot.R": &"foot_r",
+		"shin.L": &"shin_l", "forearm.R": &"forearm_r", "spine.005": &"head"}
+	var worst := 0.0
+	for bone in pairs:
+		worst = maxf(worst, player.skin.bone_world_position(bone).distance_to(puppet_pivot(pairs[bone])))
+	return worst
+
+
+## Smallest dot product between a mesh limb bone's direction and its physics segment.
+func skin_alignment() -> float:
+	player.skin.update_pose()
+	var pairs := {"upper_arm.L": &"upper_arm_l", "forearm.R": &"forearm_r", "thigh.L": &"thigh_l", "shin.R": &"shin_r"}
+	var worst := 1.0
+	for bone in pairs:
+		var b: PuppetBone = player.rig.bones[pairs[bone]]
+		var seg := (b.global_transform * (b.def.center - b.def.pivot) - b.global_transform.origin).normalized()
+		worst = minf(worst, player.skin.bone_world_direction(bone).dot(seg))
+	return worst
+
+
+func test_skin_follows_puppet() -> void:
+	print("skinned humanoid follows the puppet")
+	await place(open(), 0.5)
+	check("skin aligned with puppet joints (idle)", skin_error() < 0.08, "(worst %.3f m)" % skin_error())
+	check("mesh limbs point along their physics segments (idle)", skin_alignment() > 0.97, "(min dot %.3f)" % skin_alignment())
+	inp(Vector2(0, -1), true)
+	var worst := 0.0
+	var align := 1.0
+	for i in int(2.5 / TICK):
+		await physics_frame
+		worst = maxf(worst, skin_error())
+		align = minf(align, skin_alignment())
+	inp()
+	check("skin stays aligned while running", worst < 0.08, "(worst %.3f m)" % worst)
+	check("mesh limbs follow physics limbs while running", align > 0.95, "(min dot %.3f)" % align)
+	await place(open() + Vector3(0, 10, 0), 0.0)
+	await wait_state(PlayerController.State.RAGDOLL, 4.0)
+	await seconds(1.0)
+	var hips := player.skin.bone_world_position("spine").distance_to(player.rig.pelvis().global_position)
+	check("skin follows the ragdoll", hips < 0.2 and skin_error() < 0.15, "(hips %.3f, worst joint %.3f m)" % [hips, skin_error()])
+	await wait_state(PlayerController.State.IDLE, 8.0)
+
+
+## Stand `dist` metres in front of a prop's +Z face, facing it.
+func face_prop(body: RigidBody3D, dist: float) -> void:
+	var ext := PlayerController.object_extents(body)
+	var p := body.global_position
+	await place(Vector3(p.x, 0, p.z + ext.z + dist), 0.4)
+
+
+func test_lift_carry_throw() -> void:
+	print("lift, carry, throw")
+	var box: RigidBody3D = main.props.small_box
+	await face_prop(box, 0.45)
+	await press_interact()
+	check("E lifts a light object", player.is_carrying() == box)
+	await seconds(0.8)
+	var hold_err := box.global_position.distance_to(player._hold_target())
+	check("object held in front of the chest", hold_err < 0.25 and box.global_position.y > 0.9, "(err %.2f m, y %.2f)" % [hold_err, box.global_position.y])
+	var hands: Vector3 = (player.rig.bones[&"hand_l"].global_position + player.rig.bones[&"hand_r"].global_position) * 0.5
+	check("hands hold the object", hands.distance_to(box.global_position) < 0.3, "(%.2f m)" % hands.distance_to(box.global_position))
+	inp(Vector2(0, -1), true)
+	var max_err := 0.0
+	for i in int(2.0 / TICK):
+		await physics_frame
+		max_err = maxf(max_err, box.global_position.distance_to(player._hold_target()))
+	check("object stays held while running", player.is_carrying() == box and max_err < 0.45, "(max err %.2f m)" % max_err)
+	check("carrying slows you down", player.horizontal_speed() < cfg.run_speed * 0.99, "(%.1f m/s)" % player.horizontal_speed())
+	inp()
+	await seconds(1.0)
+	var start := box.global_position
+	inp(Vector2.ZERO, false, false, false, false, false, true)
+	await physics_frame
+	inp()
+	check("F throws", player.is_carrying() == null)
+	await seconds(0.8)
+	var flew := Vector2(box.global_position.x - start.x, box.global_position.z - start.z).length()
+	check("thrown object flies forward", flew > 3.0, "(%.1f m)" % flew)
+	await seconds(1.0)
+
+
+func test_lift_and_drop() -> void:
+	print("lift and drop the sack (18 kg)")
+	var sack: RigidBody3D = main.props.sack
+	await face_prop(sack, 0.45)
+	await press_interact()
+	check("lifts the sack", player.is_carrying() == sack)
+	await seconds(0.8)
+	inp(Vector2(0, -1))
+	await seconds(1.5)
+	inp()
+	check("heavier load slows walking", player.horizontal_speed() < cfg.walk_speed * 0.8, "(%.2f m/s)" % player.horizontal_speed())
+	await seconds(0.5)
+	await press_interact()
+	check("E drops it", player.is_carrying() == null)
+	await seconds(1.0)
+	check("dropped object lands", sack.global_position.y < 0.35, "(y %.2f)" % sack.global_position.y)
+	await seconds(0.5)
+	check("no ragdoll from handling objects", not PlayerController.State.RAGDOLL in _seen)
+
+
+func push_for(body: RigidBody3D, dir: float, t: float) -> float:
+	await face_prop(body, 0.25)
+	await press_interact()
+	if player.state != PlayerController.State.GRAB:
+		return -999.0
+	await seconds(0.3)
+	var z0 := body.global_position.z
+	inp(Vector2(0, dir))
+	await seconds(t)
+	inp()
+	return body.global_position.z - z0
+
+
+func test_push_and_pull_crate() -> void:
+	print("push and pull the 80 kg crate")
+	var crate: RigidBody3D = main.props.crate
+	await face_prop(crate, 0.25)
+	await press_interact()
+	check("E grabs a heavy object", player.state == PlayerController.State.GRAB)
+	await seconds(0.4)
+	var face_z := crate.global_position.z + PlayerController.object_extents(crate).z
+	var hand_gap := 0.0
+	for s in ["l", "r"]:
+		hand_gap = maxf(hand_gap, absf(player.rig.bones[StringName("hand_" + s)].global_position.z - face_z))
+	check("hands on the crate face", hand_gap < 0.15, "(%.2f m)" % hand_gap)
+	var z0 := crate.global_position.z
+	inp(Vector2(0, -1))
+	await seconds(2.0)
+	var pushed := z0 - crate.global_position.z
+	check("pushing moves the crate away", pushed > 1.5, "(%.2f m)" % pushed)
+	check("still grabbing after the push", player.state == PlayerController.State.GRAB)
+	var z1 := crate.global_position.z
+	inp(Vector2(0, 1))
+	await seconds(2.0)
+	inp()
+	var pulled := crate.global_position.z - z1
+	check("pulling drags the crate back", pulled > 1.0, "(%.2f m)" % pulled)
+	var gap := player.global_position.z - (crate.global_position.z + PlayerController.object_extents(crate).z)
+	check("player stays at the crate", absf(gap - cfg.grab_gap) < 0.2, "(gap %.2f m)" % gap)
+	await press_interact()
+	check("E lets go", player.state != PlayerController.State.GRAB and player.is_grabbing() == null)
+	await seconds(0.5)
+
+
+func test_heavy_block_is_slower() -> void:
+	print("250 kg block is slower")
+	var moved_crate: float = await push_for(main.props.crate, -1.0, 1.5)
+	await press_interact()
+	var moved_block: float = await push_for(main.props.block, -1.0, 1.5)
+	await press_interact()
+	check("block can be pushed", moved_block < -0.3, "(%.2f m)" % -moved_block)
+	check("heavier = slower", -moved_block < -moved_crate * 0.7, "(block %.2f m vs crate %.2f m)" % [-moved_block, -moved_crate])
+	await seconds(0.5)
+
+
+func test_too_heavy() -> void:
+	print("600 kg monolith")
+	var m: RigidBody3D = main.props.monolith
+	await face_prop(m, 0.25)
+	check("hint says too heavy", player.interact_hint().begins_with("Too heavy"), "(%s)" % player.interact_hint())
+	await press_interact()
+	check("can't grab it", player.state != PlayerController.State.GRAB and player.is_carrying() == null)
 
 
 func test_walk_momentum() -> void:
@@ -264,7 +451,7 @@ func test_foot_ik_slope() -> void:
 	await place(main.markers.ramp_30 + Vector3.UP * 0.05, 1.5, -PI * 0.5)
 	for side in ["l", "r"]:
 		var c := foot_clearance(side)
-		check("%s foot rests on the slope" % side, absf(c - 0.04) < 0.035, "(clearance %.3f m)" % c)
+		check("%s foot rests on the slope" % side, absf(c - 0.035) < 0.035, "(clearance %.3f m)" % c)
 		var a := foot_alignment(side)
 		check("%s foot tilts to the slope" % side, a > 0.97, "(dot %.3f)" % a)
 	var drop := player.rig.pelvis().global_position.y - player.global_position.y
@@ -277,12 +464,12 @@ func test_foot_ik_stairs() -> void:
 	await place(tread, 1.5)
 	for side in ["l", "r"]:
 		var c := foot_clearance(side)
-		check("%s foot stands on the tread" % side, absf(c - 0.04) < 0.035, "(clearance %.3f m)" % c)
+		check("%s foot stands on the tread" % side, absf(c - 0.035) < 0.035, "(clearance %.3f m)" % c)
 	# Split stance across two steps.
 	await place(Vector3(main.markers.stairs.x, 1.35, -2 - 5 * 0.35), 1.5, -PI * 0.5)
 	for side in ["l", "r"]:
 		var c := foot_clearance(side)
-		check("%s foot on its own step (sideways stance)" % side, absf(c - 0.04) < 0.035, "(clearance %.3f m)" % c)
+		check("%s foot on its own step (sideways stance)" % side, absf(c - 0.035) < 0.035, "(clearance %.3f m)" % c)
 
 
 func test_climb_stairs() -> void:

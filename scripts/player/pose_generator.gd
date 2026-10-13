@@ -17,6 +17,7 @@ var _cur: Dictionary = {}
 var _root_rot := Quaternion.IDENTITY
 var _root_off := Vector3.ZERO
 var _ik_w := 0.0
+var _hand_w := 0.0
 
 
 func _init() -> void:
@@ -171,6 +172,26 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 		_:
 			pass  # ragdoll: targets unused
 
+	# Arm overlays for carrying / pushing (hand IK then places the palms exactly).
+	var arm_mode: StringName = c.get("arm_mode", &"")
+	if arm_mode == &"carry":
+		for s in ["l", "r"]:
+			var side := -1.0 if s == "l" else 1.0
+			e[StringName("upper_arm_" + s)] = Vector3(0.9, 0, 0.25 * side)
+			e[StringName("forearm_" + s)] = Vector3(1.1, 0, 0)
+		e[&"spine"].x += 0.1
+	elif arm_mode == &"push":
+		var push: float = c.get("push_amount", 0.0)
+		for s in ["l", "r"]:
+			var side := -1.0 if s == "l" else 1.0
+			e[StringName("upper_arm_" + s)] = Vector3(1.35, 0, 0.15 * side)
+			e[StringName("forearm_" + s)] = Vector3(0.5, 0, 0)
+		# Lean into a push, lean back into a pull.
+		e[&"spine"].x -= 0.3 * maxf(push, 0.0) - 0.25 * maxf(-push, 0.0)
+		root_e.x -= 0.2 * maxf(push, 0.0) - 0.15 * maxf(-push, 0.0)
+	var hand_targets: Dictionary = c.get("hand_targets", {})
+	_hand_w = lerpf(_hand_w, 1.0 if not hand_targets.is_empty() else 0.0, 1.0 - exp(-12.0 * dt))
+
 	# Keep feet roughly level with the ground.
 	if not mode in [&"roll", &"air", &"hang", &"climb"]:
 		e[&"foot_l"].x -= (e[&"thigh_l"].x + e[&"shin_l"].x + root_e.x) * 0.8
@@ -194,7 +215,8 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	else:
 		_root_rot = _root_rot.slerp(root_q, k)
 		_root_off = _root_off.lerp(off, k)
-	return {"bones": _cur, "root_rot": _root_rot, "root_offset": _root_off, "foot_ik": _ik_w}
+	return {"bones": _cur, "root_rot": _root_rot, "root_offset": _root_off, "foot_ik": _ik_w,
+		"hand_ik": _hand_w if not hand_targets.is_empty() else 0.0, "hand_targets": hand_targets}
 
 
 ## Key poses are {bone: euler offset, &"_off": root offset, &"_root": root euler}.

@@ -35,7 +35,8 @@ static func make(n: StringName, p: StringName, pv: Vector3, c: Vector3, sh: Shap
 	return b
 
 
-## Placeholder humanoid, ~1.8 m tall, ~64 kg. Parents always precede children.
+## Humanoid, ~1.8 m tall, ~64 kg. Joint positions match the skinned model (male_base_mesh scaled
+## to 1.8 m) so the mesh tracks the bodies closely. Parents always precede children.
 static func default_humanoid(body: Color) -> Array[BoneDef]:
 	var skin := Color(0.93, 0.76, 0.62)
 	var limb := body.lightened(0.25)
@@ -49,15 +50,15 @@ static func default_humanoid(body: Color) -> Array[BoneDef]:
 	defs.append(make(&"head", &"chest", Vector3(0, 1.56, 0), Vector3(0, 1.68, 0), Shape.SPHERE, Vector3(0.12, 0, 0), 4.5, 0.8, Vector3(-0.8, -1.0, -0.5), Vector3(0.6, 1.0, 0.5), skin))
 	for side: float in [-1.0, 1.0]:
 		var s := "l" if side < 0 else "r"
-		var x := 0.25 * side
+		var x := 0.2 * side
 		# Arm Z limits mirrored so "raise outward" is allowed on both sides.
 		var zmin := -2.6 if side < 0 else -0.3
 		var zmax := 0.3 if side < 0 else 2.6
-		defs.append(make(StringName("upper_arm_" + s), &"chest", Vector3(x, 1.5, 0), Vector3(x, 1.36, 0), C, Vector3(0.055, 0.3, 0), 2.0, 0.7, Vector3(-1.4, -1.2, zmin), Vector3(2.8, 1.2, zmax), limb))
-		defs.append(make(StringName("forearm_" + s), StringName("upper_arm_" + s), Vector3(x, 1.22, 0), Vector3(x, 1.09, 0), C, Vector3(0.045, 0.28, 0), 1.5, 0.6, Vector3(-0.1, -0.6, -0.2), Vector3(2.5, 0.6, 0.2), limb))
-		defs.append(make(StringName("hand_" + s), StringName("forearm_" + s), Vector3(x, 0.96, 0), Vector3(x, 0.9, 0), B, Vector3(0.07, 0.12, 0.05), 0.5, 0.4, Vector3(-0.8, -0.3, -0.4), Vector3(0.8, 0.3, 0.4), skin))
+		defs.append(make(StringName("upper_arm_" + s), &"chest", Vector3(x, 1.47, 0), Vector3(x, 1.32, 0), C, Vector3(0.055, 0.32, 0), 2.0, 0.7, Vector3(-1.4, -1.2, zmin), Vector3(2.8, 1.2, zmax), limb))
+		defs.append(make(StringName("forearm_" + s), StringName("upper_arm_" + s), Vector3(x, 1.17, 0), Vector3(x, 1.06, 0), C, Vector3(0.045, 0.25, 0), 1.5, 0.6, Vector3(-0.1, -0.6, -0.2), Vector3(2.5, 0.6, 0.2), limb))
+		defs.append(make(StringName("hand_" + s), StringName("forearm_" + s), Vector3(x, 0.95, 0), Vector3(x, 0.89, 0), B, Vector3(0.07, 0.12, 0.05), 0.5, 0.4, Vector3(-0.8, -0.3, -0.4), Vector3(0.8, 0.3, 0.4), skin))
 		var lx := 0.1 * side
-		defs.append(make(StringName("thigh_" + s), &"pelvis", Vector3(lx, 0.92, 0), Vector3(lx, 0.71, 0), C, Vector3(0.075, 0.42, 0), 7.0, 1.0, Vector3(-0.9, -0.6, -0.6), Vector3(2.4, 0.6, 0.6), dark.lightened(0.15)))
-		defs.append(make(StringName("shin_" + s), StringName("thigh_" + s), Vector3(lx, 0.5, 0), Vector3(lx, 0.3, 0), C, Vector3(0.055, 0.4, 0), 3.5, 1.0, Vector3(-2.6, -0.2, -0.15), Vector3(0.05, 0.2, 0.15), dark.lightened(0.15)))
-		defs.append(make(StringName("foot_" + s), StringName("shin_" + s), Vector3(lx, 0.1, 0), Vector3(lx, 0.04, -0.05), B, Vector3(0.1, 0.07, 0.25), 1.0, 0.9, Vector3(-0.7, -0.3, -0.3), Vector3(0.8, 0.3, 0.3), Color(0.2, 0.2, 0.22)))
+		defs.append(make(StringName("thigh_" + s), &"pelvis", Vector3(lx, 0.91, 0), Vector3(lx, 0.7275, 0), C, Vector3(0.075, 0.37, 0), 7.0, 1.0, Vector3(-0.9, -0.6, -0.6), Vector3(2.4, 0.6, 0.6), dark.lightened(0.15)))
+		defs.append(make(StringName("shin_" + s), StringName("thigh_" + s), Vector3(lx, 0.545, 0), Vector3(lx, 0.3125, 0), C, Vector3(0.055, 0.46, 0), 3.5, 1.0, Vector3(-2.6, -0.2, -0.15), Vector3(0.05, 0.2, 0.15), dark.lightened(0.15)))
+		defs.append(make(StringName("foot_" + s), StringName("shin_" + s), Vector3(lx, 0.08, 0), Vector3(lx, 0.035, -0.05), B, Vector3(0.1, 0.07, 0.25), 1.0, 0.9, Vector3(-0.7, -0.3, -0.3), Vector3(0.8, 0.3, 0.3), Color(0.2, 0.2, 0.22)))
 	return defs
