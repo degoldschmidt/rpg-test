@@ -23,6 +23,11 @@ It follows its animation tightly, wobbles when hit, and collapses into a full ra
 | Camera | Mouse (click to capture, Esc to release) | Right stick |
 | Toggle help | F1 | |
 
+**Ledges:**
+- **Mantle:** jump facing a chest-high ledge (0.6–1.6 m) and you climb straight onto it. A running jump into a ledge keeps some of your speed over the top.
+- **Grab:** jump at a higher ledge (up to about 3.6 m from the ground) to grab it and hang.
+- **While hanging:** A/D shimmies along the ledge and stops at its end. Jump or W climbs up. Crouch or S drops off.
+
 **Tip:** press roll just before landing from a big drop to roll it out instead of ragdolling.
 
 ## Test level
@@ -33,6 +38,7 @@ The level is built in code by `scripts/main.gd`. It contains:
 - **Landing platforms:** 2, 5 and 10 m high, each with a ramp up.
 - **Crouch tunnel:** ceiling at 1.5 m.
 - **Jump gaps:** 2.5, 3.5 and 4.5 m.
+- **Climbing area:** a 1.2 m mantle block, and an 8 m wide, 3 m tall wall to hang, shimmy and climb, with a higher ledge stacked on top.
 - **Crate pyramid:** physics props.
 - **Hazards:** a swinging log, a rotating sweeper bar (jump it), a red bumper, and a ramp that drops boulders.
 
@@ -70,6 +76,12 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
   - Results are smoothed to hide pops at step edges.
   - IK is on while grounded (ground, crouch, stumble, get-up), partly on during a slide, and off in the air or a roll.
   - Tunables: `ik_probe_up`, `ik_max_drop`, `ik_smoothing`.
+- **Ledges** (in `player_controller.gd`, under "ledges").
+  - Detection: forward rays find a wall, a downward ray finds the ledge top, and a capsule overlap test checks there's room to stand on top.
+  - Ledge height relative to the feet picks the move: ground mantle, mid-air mantle, or grab and hang.
+  - `LEDGE_HANG` pins the capsule under the edge and re-probes the ledge as it shimmies. `CLIMB` moves the capsule up first, then over the edge.
+  - The puppet blends through hang → pull → crouch → stand key poses.
+  - All tunables are in the "Ledges" group of `MovementConfig`.
 - **Stairs.** The capsule rides a smooth invisible ramp through the step nosings (`proxy_only` layer). The treads are real colliders that only the puppet and foot IK see (`detail` layer), so the movement stays smooth while the feet land on each step.
 
 ### Physics layers
@@ -106,12 +118,13 @@ Muscle stiffness gains are at the top of `scripts/player/ragdoll_rig.gd`. Per-bo
 godot --headless --fixed-fps 120 --path . -s tests/run_tests.gd
 ```
 
-The suite has 57 deterministic gameplay checks. It covers:
+The suite has 81 deterministic gameplay checks. It covers:
 - idle stability and joint-limit sanity
 - walk and run acceleration and inertia
 - skid
 - variable jump height
 - crouch under the tunnel ceiling
+- ledges: ground, running and mid-air mantles; grab, hang height and hand placement; shimmy and stopping at the ledge end; climbing up; dropping off without re-grabbing; out-of-reach walls
 - foot IK on a 30° slope and on stairs (feet on the surface and tilted to it, pelvis drop, stair climb without sinking)
 - slide distance
 - roll tumble
@@ -145,5 +158,5 @@ tests/run_tests.gd
 ## Next steps toward the RPG
 
 - Swap the capsule puppet for a skinned humanoid. Drive its `Skeleton3D` bones from the puppet bodies, or use `PhysicalBoneSimulator3D`. Replace the procedural poses with authored animations sampled as targets.
-- Add ledge grab and mantle, plus combat hit reactions through `apply_hit`.
+- Add combat hit reactions through `apply_hit`.
 - Move hot paths to C# or GDExtension if profiling shows a need. With many NPCs, put distant characters on a cheaper kinematic-only LOD.

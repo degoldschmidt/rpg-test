@@ -128,6 +128,37 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 			e[&"upper_arm_r"] += Vector3(1.1, 0, -0.1) * tuck
 			e[&"forearm_l"].x += 1.2 * tuck
 			e[&"forearm_r"].x += 1.2 * tuck
+		&"hang":
+			rate = 10.0
+			_apply(e, _key_hang(), 1.0)
+			off += Vector3(0, 0, -0.12)
+			var sh: float = c.get("shimmy", 0.0)
+			var sway := sin(time * 1.6)
+			e[&"thigh_l"].x += 0.12 * sway
+			e[&"thigh_r"].x -= 0.12 * sway
+			if sh != 0.0:
+				# Hand-over-hand: alternate arms reaching sideways.
+				var s := sin(time * 9.0)
+				e[&"upper_arm_l"].z -= 0.25 * maxf(s, 0.0)
+				e[&"upper_arm_r"].z += 0.25 * maxf(-s, 0.0)
+				root_e.z -= 0.08 * sh
+		&"climb":
+			rate = 18.0
+			var t: float = c.get("climb_t", 0.0)
+			var from_hang: bool = c.get("climb_from_hang", false)
+			var k0 := _key_hang() if from_hang else _key_reach()
+			var keys := [[0.0, k0], [0.45, _key_pull()], [0.8, _key_crouch()], [1.0, {}]]
+			for i in keys.size() - 1:
+				var a: Array = keys[i]
+				var b: Array = keys[i + 1]
+				if t <= b[0] or i == keys.size() - 2:
+					var u := clampf((t - a[0]) / (b[0] - a[0]), 0.0, 1.0)
+					u = u * u * (3.0 - 2.0 * u)
+					_apply(e, a[1], 1.0 - u)
+					_apply(e, b[1], u)
+					off += (a[1] as Dictionary).get(&"_off", Vector3.ZERO) * (1.0 - u) + (b[1] as Dictionary).get(&"_off", Vector3.ZERO) * u
+					root_e += (a[1] as Dictionary).get(&"_root", Vector3.ZERO) * (1.0 - u) + (b[1] as Dictionary).get(&"_root", Vector3.ZERO) * u
+					break
 		&"get_up":
 			rate = 6.0
 			var t: float = c.get("get_up_t", 0.0)
@@ -141,7 +172,7 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 			pass  # ragdoll: targets unused
 
 	# Keep feet roughly level with the ground.
-	if mode != &"roll" and mode != &"air":
+	if not mode in [&"roll", &"air", &"hang", &"climb"]:
 		e[&"foot_l"].x -= (e[&"thigh_l"].x + e[&"shin_l"].x + root_e.x) * 0.8
 		e[&"foot_r"].x -= (e[&"thigh_r"].x + e[&"shin_r"].x + root_e.x) * 0.8
 
@@ -164,6 +195,59 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 		_root_rot = _root_rot.slerp(root_q, k)
 		_root_off = _root_off.lerp(off, k)
 	return {"bones": _cur, "root_rot": _root_rot, "root_offset": _root_off, "foot_ik": _ik_w}
+
+
+## Key poses are {bone: euler offset, &"_off": root offset, &"_root": root euler}.
+func _apply(e: Dictionary, key: Dictionary, w: float) -> void:
+	if w <= 0.0:
+		return
+	for b in key:
+		if e.has(b):
+			e[b] += (key[b] as Vector3) * w
+
+
+## Arms overhead on the ledge, legs dangling.
+func _key_hang() -> Dictionary:
+	return {
+		&"upper_arm_l": Vector3(2.75, 0, 0.27), &"upper_arm_r": Vector3(2.75, 0, -0.27),
+		&"forearm_l": Vector3(-0.1, 0, 0), &"forearm_r": Vector3(-0.1, 0, 0),
+		&"head": Vector3(0.25, 0, 0),
+		&"thigh_l": Vector3(0.15, 0, 0), &"thigh_r": Vector3(0.05, 0, 0),
+		&"shin_l": Vector3(-0.35, 0, 0), &"shin_r": Vector3(-0.2, 0, 0),
+		&"foot_l": Vector3(0.4, 0, 0), &"foot_r": Vector3(0.3, 0, 0),
+		&"_off": Vector3(0, 0, -0.12),
+	}
+
+
+## Hands reaching for a chest-high ledge, one knee lifting.
+func _key_reach() -> Dictionary:
+	return {
+		&"upper_arm_l": Vector3(1.7, 0, 0.1), &"upper_arm_r": Vector3(1.7, 0, -0.1),
+		&"forearm_l": Vector3(0.2, 0, 0), &"forearm_r": Vector3(0.2, 0, 0),
+		&"spine": Vector3(-0.3, 0, 0),
+		&"thigh_l": Vector3(0.9, 0, 0), &"shin_l": Vector3(-1.2, 0, 0),
+	}
+
+
+## Hips over the edge: arms pushing down, lead knee on the ledge.
+func _key_pull() -> Dictionary:
+	return {
+		&"upper_arm_l": Vector3(-0.3, 0, -0.35), &"upper_arm_r": Vector3(-0.3, 0, 0.35),
+		&"forearm_l": Vector3(0.9, 0, 0), &"forearm_r": Vector3(0.9, 0, 0),
+		&"spine": Vector3(-0.6, 0, 0), &"chest": Vector3(-0.3, 0, 0), &"head": Vector3(0.4, 0, 0),
+		&"thigh_l": Vector3(1.8, 0, 0), &"shin_l": Vector3(-2.2, 0, 0), &"foot_l": Vector3(0.4, 0, 0),
+		&"thigh_r": Vector3(0.5, 0, 0), &"shin_r": Vector3(-1.0, 0, 0),
+		&"_off": Vector3(0, -0.2, 0.05),
+	}
+
+
+func _key_crouch() -> Dictionary:
+	var e := {}
+	for b in BONES:
+		e[b] = Vector3.ZERO
+	_crouch(e, 1.0)
+	e[&"_off"] = Vector3(0, -0.3, 0.15)
+	return e
 
 
 func _crouch(e: Dictionary, cr: float) -> void:

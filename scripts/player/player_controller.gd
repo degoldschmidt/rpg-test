@@ -6,9 +6,9 @@ extends CharacterBody3D
 
 signal state_changed(old_state: State, new_state: State)
 
-enum State { IDLE, WALK, RUN, CROUCH, SLIDE, AIR, ROLL, STUMBLE, RAGDOLL, GET_UP }
+enum State { IDLE, WALK, RUN, CROUCH, SLIDE, AIR, ROLL, STUMBLE, RAGDOLL, GET_UP, LEDGE_HANG, CLIMB }
 
-const CROUCH_STATES: Array[State] = [State.CROUCH, State.SLIDE, State.ROLL]
+const CROUCH_STATES: Array[State] = [State.CROUCH, State.SLIDE, State.ROLL, State.CLIMB]
 const JUMP_STATES: Array[State] = [State.IDLE, State.WALK, State.RUN, State.CROUCH, State.SLIDE]
 
 @export var config: MovementConfig
@@ -46,6 +46,14 @@ var _last_hv := Vector3.ZERO
 var _lean := Vector2.ZERO
 var _settle := 0.0
 var _spawn := Transform3D()
+var _ledge := {}             ## current ledge (see _find_ledge)
+var _grab_cooldown := 0.0
+var _climb_from := Vector3.ZERO
+var _climb_to := Vector3.ZERO
+var _climb_time := 0.5
+var _climb_from_hang := false
+var _climb_exit_speed := 0.0
+var _shimmy := 0.0
 
 
 func _ready() -> void:
@@ -123,6 +131,10 @@ func _physics_process(dt: float) -> void:
 			_update_ragdoll(dt)
 		State.GET_UP:
 			_update_get_up(dt)
+		State.LEDGE_HANG:
+			_update_hang(dt)
+		State.CLIMB:
+			_update_climb(dt)
 		_:
 			_update_locomotion(dt)
 	_update_puppet(dt)
@@ -165,6 +177,7 @@ func _update_locomotion(dt: float) -> void:
 	_jump_buffer = cfg.jump_buffer if _in.jump_pressed else _jump_buffer - dt
 	_roll_buffer = 0.0 if _in.roll_pressed else _roll_buffer + dt
 	_roll_cooldown -= dt
+	_grab_cooldown -= dt
 	_land_squash = move_toward(_land_squash, 0.0, dt * 4.0)
 	var hs := horizontal_speed()
 
@@ -200,6 +213,11 @@ func _update_locomotion(dt: float) -> void:
 					_set_state(gs)
 
 	if _jump_buffer > 0.0 and _coyote > 0.0 and state in JUMP_STATES:
+		# Jump facing a chest-high ledge = mantle instead.
+		var ledge := _find_ledge(_probe_dir(wish), global_position)
+		if not ledge.is_empty() and ledge.height >= cfg.mantle_min_height and ledge.height <= cfg.mantle_max_height:
+			_start_climb(ledge, false)
+			return
 		if not _crouched_shape or _can_stand():
 			_do_jump()
 
@@ -246,6 +264,8 @@ func _update_locomotion(dt: float) -> void:
 
 	if was_air and is_on_floor() and state == State.AIR:
 		_on_land(-pre_vy)
+	elif state == State.AIR:
+		_try_air_ledge(wish)
 
 	_update_facing(dt)
 	var hv_now := Vector3(velocity.x, 0, velocity.z)
@@ -385,7 +405,7 @@ func _set_state(s: State) -> void:
 	var want_crouch := s in CROUCH_STATES
 	if want_crouch and not _crouched_shape:
 		_set_capsule(true)
-	elif not want_crouch and _crouched_shape and s != State.AIR and s != State.RAGDOLL:
+	elif not want_crouch and _crouched_shape and not s in [State.AIR, State.RAGDOLL, State.LEDGE_HANG]:
 		if _can_stand():
 			_set_capsule(false)
 		elif s != State.GET_UP:
@@ -396,6 +416,166 @@ func _set_state(s: State) -> void:
 	state = s
 	state_time = 0.0
 	state_changed.emit(old, s)
+
+
+# ---------------------------------------------------------------- ledges
+
+func _probe_dir(wish: Vector3) -> Vector3:
+	return wish.normalized() if wish.length() > 0.3 else facing_dir()
+
+
+## Looks for a grabbable ledge in `dir` from a capsule standing at `base` (feet).
+## Returns {} or {y, height, normal (out of the wall), edge (top of the wall face), stand, can_stand}.
+func _find_ledge(dir: Vector3, base: Vector3) -> Dictionary:
+	var cfg := config
+	var space := get_world_3d().direct_space_state
+	var mask := InputSetup.LAYER_WORLD | InputSetup.LAYER_PROPS
+	var wall := {}
+	for h: float in [0.4, 1.0, 1.6]:
+		var from := base + Vector3.UP * h
+		var q := PhysicsRayQueryParameters3D.create(from, from + dir * cfg.ledge_reach, mask)
+		var hit := space.intersect_ray(q)
+		if hit and absf((hit.normal as Vector3).y) < 0.3:
+			wall = hit
+			break
+	if wall.is_empty():
+		return {}
+	var n := Vector3(wall.normal.x, 0.0, wall.normal.z).normalized()
+	var wp: Vector3 = wall.position
+	var top_from := Vector3(wp.x, base.y + cfg.grab_max_height + 0.3, wp.z) - n * 0.25
+	var down := space.intersect_ray(PhysicsRayQueryParameters3D.create(top_from,
+		Vector3(top_from.x, base.y + 0.3, top_from.z), mask))
+	if down.is_empty() or (down.normal as Vector3).y < 0.7:
+		return {}
+	var y: float = down.position.y
+	var stand := Vector3(wp.x, y, wp.z) - n * (cfg.capsule_radius + 0.15)
+	if _capsule_blocked(stand, cfg.crouch_height):
+		return {}
+	return {
+		"y": y,
+		"height": y - base.y,
+		"normal": n,
+		"edge": Vector3(wp.x, y, wp.z),
+		"stand": stand,
+		"can_stand": not _capsule_blocked(stand, cfg.stand_height),
+	}
+
+
+func _capsule_blocked(feet: Vector3, height: float) -> bool:
+	var sh := CapsuleShape3D.new()
+	sh.radius = config.capsule_radius
+	sh.height = height
+	var params := PhysicsShapeQueryParameters3D.new()
+	params.shape = sh
+	params.transform = Transform3D(Basis(), feet + Vector3.UP * (height * 0.5 + 0.03))
+	params.collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PROPS
+	return not get_world_3d().direct_space_state.intersect_shape(params, 1).is_empty()
+
+
+func _try_air_ledge(wish: Vector3) -> void:
+	var cfg := config
+	if _grab_cooldown > 0.0 or _in.get("crouch", false) or velocity.y < cfg.grab_min_vy:
+		return
+	var hv := Vector3(velocity.x, 0, velocity.z)
+	var dir := _probe_dir(wish) if wish.length() > 0.3 else (hv.normalized() if hv.length() > 0.5 else facing_dir())
+	var ledge := _find_ledge(dir, global_position)
+	if ledge.is_empty():
+		return
+	# Only grab what we are actually heading for.
+	var into := -(ledge.normal as Vector3)
+	if wish.dot(into) < 0.3 and hv.dot(into) < 1.0:
+		return
+	var h: float = ledge.height
+	if h >= 0.3 and h <= cfg.air_mantle_max_height:
+		_start_climb(ledge, false)
+	elif h > cfg.air_mantle_max_height and h <= cfg.grab_max_height and velocity.y < 1.5:
+		_start_hang(ledge)
+
+
+func _hang_position(ledge: Dictionary) -> Vector3:
+	var e: Vector3 = ledge.edge
+	return Vector3(e.x, ledge.y - config.hang_hand_height, e.z) + (ledge.normal as Vector3) * config.hang_wall_gap
+
+
+func _face_wall(n: Vector3) -> void:
+	facing_yaw = atan2(n.x, n.z)  # facing_dir() == -n
+
+
+func _start_hang(ledge: Dictionary) -> void:
+	_ledge = ledge
+	_face_wall(ledge.normal)
+	_col.disabled = true
+	velocity = Vector3.ZERO
+	global_position = _hang_position(ledge)
+	_shimmy = 0.0
+	_set_state(State.LEDGE_HANG)
+
+
+func _update_hang(dt: float) -> void:
+	var cfg := config
+	var wish := _wish_dir()
+	var n: Vector3 = _ledge.normal
+	var fwd := -n
+	var right := fwd.cross(Vector3.UP)
+	var toward := wish.dot(fwd)
+	var side := wish.dot(right)
+	_shimmy = 0.0
+	velocity = Vector3.ZERO
+	rig.muscle = move_toward(rig.muscle, 1.0, dt * 2.0)
+	if _in.jump_pressed or (toward > 0.6 and state_time > 0.3):
+		_start_climb(_ledge, true)
+	elif _in.crouch_pressed or toward < -0.6:
+		_col.disabled = false
+		_grab_cooldown = cfg.regrab_cooldown
+		velocity = n * 1.5
+		_set_state(State.AIR)
+	elif absf(side) > 0.3:
+		var step := right * signf(side) * cfg.shimmy_speed * dt
+		# Probe from a little further along so we stop before the ledge ends.
+		var probe := _find_ledge(fwd, global_position + step + right * signf(side) * 0.25)
+		if not probe.is_empty() and absf(probe.y - _ledge.y) < 0.25 and probe.normal.dot(n) > 0.9:
+			var ahead := _find_ledge(fwd, global_position + step)
+			if not ahead.is_empty():
+				_ledge = ahead
+				global_position = _hang_position(ahead)
+				velocity = step / dt
+				_shimmy = signf(side)
+
+
+func _start_climb(ledge: Dictionary, from_hang: bool) -> void:
+	var cfg := config
+	_ledge = ledge
+	_climb_from = global_position
+	_climb_to = ledge.stand
+	_climb_from_hang = from_hang
+	var into := -(ledge.normal as Vector3)
+	_climb_exit_speed = 0.0 if from_hang else clampf(Vector3(velocity.x, 0, velocity.z).dot(into) * 0.7, 0.0, cfg.run_speed)
+	if from_hang:
+		_climb_time = cfg.climb_up_time
+	else:
+		var k := inverse_lerp(cfg.mantle_min_height, cfg.mantle_max_height, ledge.height)
+		_climb_time = lerpf(cfg.mantle_time_low, cfg.mantle_time_high, clampf(k, 0.0, 1.0))
+	_face_wall(ledge.normal)
+	_col.disabled = true
+	_set_state(State.CLIMB)
+
+
+func _update_climb(dt: float) -> void:
+	var t := clampf(state_time / _climb_time, 0.0, 1.0)
+	# Up first, then over the edge.
+	var up := smoothstep(0.0, 0.6, t)
+	var over := smoothstep(0.55, 1.0, t)
+	var p := Vector3(lerpf(_climb_from.x, _climb_to.x, over),
+		lerpf(_climb_from.y, _climb_to.y + 0.02, up),
+		lerpf(_climb_from.z, _climb_to.z, over))
+	velocity = (p - global_position) / dt
+	global_position = p
+	rig.muscle = move_toward(rig.muscle, 1.0, dt * 2.0)
+	if t >= 1.0:
+		_col.disabled = false
+		velocity = -(_ledge.normal as Vector3) * _climb_exit_speed
+		_coyote = config.coyote_time
+		_set_state(_ground_state(_wish_dir()))
 
 
 # ---------------------------------------------------------------- ragdoll
@@ -480,6 +660,10 @@ func _update_puppet(dt: float) -> void:
 			mode = &"ragdoll"
 		State.GET_UP:
 			mode = &"get_up"
+		State.LEDGE_HANG:
+			mode = &"hang"
+		State.CLIMB:
+			mode = &"climb"
 	var mv: Vector2 = _in.get("move", Vector2.ZERO)
 	var ctx := {
 		"mode": mode,
@@ -493,6 +677,9 @@ func _update_puppet(dt: float) -> void:
 		"lean": _lean,
 		"land_squash": _land_squash,
 		"skid": _skidding,
+		"climb_t": clampf(state_time / _climb_time, 0.0, 1.0),
+		"climb_from_hang": _climb_from_hang,
+		"shimmy": _shimmy,
 	}
 	var pose := pose_gen.compute(ctx, dt)
 	rig.step(dt, root_transform(), velocity if state != State.RAGDOLL else Vector3.ZERO, pose)
@@ -519,6 +706,8 @@ func teleport(pos: Vector3, yaw := 0.0) -> void:
 	_land_squash = 0.0
 	_last_hv = Vector3.ZERO
 	_lean = Vector2.ZERO
+	_ledge = {}
+	_grab_cooldown = 0.0
 	state = State.IDLE
 	state_time = 0.0
 	rig.muscle = 1.0

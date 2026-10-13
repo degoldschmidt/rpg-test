@@ -7,6 +7,7 @@ extends CanvasLayer
 const HELP := """WASD / left stick  move     Shift / L3  run
 Space / A  jump (hold for height)     Ctrl,C / B  crouch (while running: slide)
 Q / X  forward roll (press just before landing to roll out of big falls)
+Jump at a chest-high ledge: mantle | jump at a higher one: grab. Hanging: A/D shimmy, jump/W climb, crouch/S drop
 G / Y  toggle ragdoll     R / Back  reset     Mouse / right stick  camera
 Click to capture mouse, Esc to release, F1 hide help"""
 
@@ -25,7 +26,7 @@ func _ready() -> void:
 	_help.anchor_top = 1.0
 	_help.anchor_bottom = 1.0
 	_help.offset_left = 16
-	_help.offset_top = -110
+	_help.offset_top = -132
 	_help.text = HELP
 	_help.add_theme_font_size_override("font_size", 15)
 	_help.add_theme_color_override("font_outline_color", Color.BLACK)
