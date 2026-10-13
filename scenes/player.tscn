@@ -1,0 +1,8 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/player/player_controller.gd" id="1"]
+[ext_resource type="Resource" path="res://resources/movement_default.tres" id="2"]
+
+[node name="Player" type="CharacterBody3D"]
+script = ExtResource("1")
+config = ExtResource("2")
