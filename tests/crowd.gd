@@ -7,6 +7,9 @@ extends SceneTree
 ## 2) Video of the same deterministic run, overlaying the measured simulation FPS per frame:
 ##    godot --rendering-driver opengl3 --resolution 1280x720 --write-movie crowd.avi --fixed-fps 60 \
 ##      --path . -s tests/crowd.gd -- --timeline=crowd.json
+## 3) Live, in real time with real rendering (e.g. on your own machine), showing actual FPS:
+##    godot --path . -s tests/crowd.gd -- --live [--no-vsync]
+## (tools/crowd_mac.sh wraps all three for macOS.)
 
 const PLAYER_SCENE := preload("res://scenes/player.tscn")
 const NPCS := 100
@@ -18,6 +21,8 @@ var player: PlayerController
 var cam: CameraRig
 var npcs: Array[PlayerController] = []
 var measure := false
+var live := false
+var no_vsync := false
 var timeline_path := ""
 var timeline: Array = []      ## measure: [ms, full, kinematic, proxy, ragdolls] per frame
 var overlay: Label
@@ -30,6 +35,10 @@ func _initialize() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a == "--measure":
 			measure = true
+		elif a == "--live":
+			live = true
+		elif a == "--no-vsync":
+			no_vsync = true
 		elif a.begins_with("--timeline="):
 			timeline_path = a.trim_prefix("--timeline=")
 	_run()
@@ -56,6 +65,10 @@ func _run() -> void:
 	waypoints = [center + Vector3(0, 0, -24), center + Vector3(16, 0, -8), center + Vector3(-18, 0, 6),
 		center + Vector3(6, 0, 20)]
 
+	if live:
+		await _run_live()
+		quit()
+		return
 	var frames := int(DURATION * 60.0)
 	if measure:
 		PlayerController.profile = true
@@ -63,7 +76,7 @@ func _run() -> void:
 		PlayerController.profile_usec = 0
 	var last := Time.get_ticks_usec()
 	for f in frames:
-		_drive(f)
+		_drive(f / 60.0)
 		await process_frame
 		var now := Time.get_ticks_usec()
 		if measure:
@@ -75,6 +88,35 @@ func _run() -> void:
 	if measure:
 		_report()
 	quit()
+
+
+## Real time, real rendering: what you actually get on this machine (vsync caps the FPS at the
+## display refresh unless --no-vsync).
+func _run_live() -> void:
+	if no_vsync:
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	var start := Time.get_ticks_usec()
+	var last := start
+	var recent: Array[float] = []
+	while (Time.get_ticks_usec() - start) / 1e6 < DURATION:
+		_drive((Time.get_ticks_usec() - start) / 1e6)
+		await process_frame
+		var now := Time.get_ticks_usec()
+		var ms := (now - last) / 1000.0
+		last = now
+		var c := _counts()
+		timeline.append([ms, c[0], c[1], c[2], c[3]])
+		recent.append(ms)
+		if recent.size() > 30:
+			recent.pop_front()
+		var avg: float = recent.reduce(func(a, x): return a + x, 0.0) / recent.size()
+		overlay.text = "%d FPS  (%.1f ms / frame) — live: rendering + simulation%s\n100 NPCs — full %d / kinematic %d / proxy %d — ragdolls %d\n%s, %s" % [
+			roundi(1000.0 / avg), avg, "" if no_vsync else " (vsync on: capped at display refresh)",
+			c[0], c[1], c[2], c[3], OS.get_name(), RenderingServer.get_video_adapter_name()]
+		overlay.modulate = Color(0.6, 1.0, 0.6) if avg <= 1000.0 / 60.0 else Color(1.0, 0.75, 0.5)
+	print("Live run on %s / %s / %s (%d threads):" % [OS.get_name(), OS.get_processor_name(),
+		RenderingServer.get_video_adapter_name(), OS.get_processor_count()])
+	_report()
 
 
 func _spawn_crowd() -> void:
@@ -105,8 +147,7 @@ func _spawn_crowd() -> void:
 
 
 ## Scripted player: wait, then run through the crowd along a few waypoints.
-func _drive(f: int) -> void:
-	var t := f / 60.0
+func _drive(t: float) -> void:
 	cam.yaw = lerp_angle(cam.yaw, player.facing_yaw, 0.04)
 	if t < 1.5 or _wp >= waypoints.size():
 		player.external_input = {}

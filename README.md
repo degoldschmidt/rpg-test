@@ -8,6 +8,19 @@ It follows its animation tightly, wobbles when hit, and collapses into a full ra
 
 ## Run it
 
+**On a Mac** (Apple Silicon or Intel), one script downloads Godot 4.5.1 on first use and runs everything:
+
+```
+tools/crowd_mac.sh                # crowd test live: 100 NPCs, real rendering, real FPS overlay
+tools/crowd_mac.sh live-uncapped  # same with vsync off, to see headroom above the display refresh
+tools/crowd_mac.sh measure        # simulation-only FPS (comparable with docs/performance.md)
+tools/crowd_mac.sh video          # record out/crowd_mac.mp4 (brew install ffmpeg for .mp4)
+tools/crowd_mac.sh game           # play the test level
+tools/crowd_mac.sh tests          # full test suite
+```
+
+**Anywhere else:**
+
 1. Install [Godot 4.5.x](https://godotengine.org/download) (standard build, no C# needed).
 2. Open `project.godot` in Godot and press **F5**, or from a terminal run `godot --path .`.
 
