@@ -39,6 +39,7 @@ var _ik_normal := {&"l": Vector3.UP, &"r": Vector3.UP}
 var _leg_len := 0.0
 var _show_anim := {}     ## bone -> how much of the animation the skin shows (see display_transform)
 const LEG_BONES: Array[StringName] = [&"thigh_l", &"shin_l", &"foot_l", &"thigh_r", &"shin_r", &"foot_r"]
+const ARM_BONES: Array[StringName] = [&"upper_arm_l", &"forearm_l", &"hand_l", &"upper_arm_r", &"forearm_r", &"hand_r"]
 
 
 func build(root: Transform3D, body_color: Color) -> void:
@@ -187,7 +188,7 @@ func step(dt: float, root: Transform3D, root_velocity: Vector3, pose: Dictionary
 	var gw: float = (pose.get("feet_w", {}) as Dictionary).get(&"l", 0.0) * muscle
 	for d in defs:
 		var calm := smoothstep(0.6, 1.0, _weak[d.name])
-		var k := 1.0 if d.name in LEG_BONES or d.name == &"pelvis" else 0.5
+		var k := 1.0 if d.name in LEG_BONES or d.name == &"pelvis" else (0.8 if d.name in ARM_BONES else 0.5)
 		_show_anim[d.name] = gw * calm * k
 
 
@@ -244,7 +245,7 @@ func _leg_ik(out: Dictionary, root: Transform3D, pose: Dictionary) -> Dictionary
 		var ankle := _pivot(out, foot).lerp(want.origin, w)
 		var b := Basis(fk_basis.get_rotation_quaternion().slerp(want.basis.get_rotation_quaternion(), w))
 		_solve_two_bone(out, StringName("thigh_" + s), StringName("shin_" + s), foot,
-			ankle, Quaternion(b * fk_basis.inverse()), root.basis * Vector3.FORWARD, false)
+			ankle, Quaternion(b * fk_basis.inverse()), _knee_dir(root, want.basis, s), false, true)
 	return out
 
 
@@ -348,15 +349,26 @@ func _foot_ik(out: Dictionary, root: Transform3D, pose: Dictionary, w: float, k:
 		var target: Vector3 = ankles[s] + Vector3.UP * (_ik_delta[s] as float) * w
 		var tilt := Quaternion.IDENTITY.slerp(Quaternion(Vector3.UP, _ik_normal[s]), w)
 		_solve_two_bone(out, StringName("thigh_" + s), StringName("shin_" + s), StringName("foot_" + s),
-			target, tilt, root.basis * Vector3.FORWARD, false)
+			target, tilt, _knee_dir(root, (out[StringName("foot_" + s)] as Transform3D).basis, s), false, true)
 	return out
 
 
+## Knees bend forward along the foot (toes point -Z), turned slightly out, never backwards.
+func _knee_dir(root: Transform3D, foot_basis: Basis, s: StringName) -> Vector3:
+	var fwd := -foot_basis.z
+	fwd.y = 0.0
+	if fwd.length_squared() < 0.01:
+		fwd = root.basis * Vector3.FORWARD
+	var side := -1.0 if s == &"l" else 1.0
+	return (fwd.normalized() + (root.basis * Vector3.RIGHT) * side * 0.12).normalized()
+
+
 ## Analytic two-bone IK: upper + lower reach `target` with the end bone's pivot, keeping
-## the FK bend plane (fallback `pole` when the chain is straight). The end bone either keeps
+## the FK bend plane (or always bending toward `pole_hint` with `force_pole`; legs use it so a
+## knee can never fold backwards when the foot is placed ahead of the hip). The end bone either keeps
 ## its FK world rotation tilted by `end_tilt` (feet) or follows the lower bone (hands).
 func _solve_two_bone(out: Dictionary, upper: StringName, lower: StringName, end: StringName,
-		target: Vector3, end_tilt: Quaternion, pole_hint: Vector3, end_follows: bool) -> void:
+		target: Vector3, end_tilt: Quaternion, pole_hint: Vector3, end_follows: bool, force_pole := false) -> void:
 	var du: BoneDef = _def[upper]
 	var dl: BoneDef = _def[lower]
 	var de: BoneDef = _def[end]
@@ -370,8 +382,10 @@ func _solve_two_bone(out: Dictionary, upper: StringName, lower: StringName, end:
 	var dist := clampf(to_t.length(), 0.05, (l1 + l2) * 0.999)
 	var dir := to_t.normalized()
 	var pole := (mid - root_p) - dir * (mid - root_p).dot(dir)
-	if pole.length() < 0.01:
+	if force_pole or pole.length() < 0.01:
 		pole = pole_hint - dir * pole_hint.dot(dir)
+		if pole.length() < 0.05:   # limb pointing along the hint: bend up instead
+			pole = Vector3.UP - dir * dir.y
 	pole = pole.normalized()
 	var a := (l1 * l1 - l2 * l2 + dist * dist) / (2.0 * dist)
 	var h := sqrt(maxf(l1 * l1 - a * a, 0.0))

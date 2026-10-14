@@ -2,7 +2,7 @@ extends SceneTree
 ## Scripted showcase clips for watching the prototype without playing it. Record one with:
 ##   xvfb-run godot --rendering-driver opengl3 --resolution 1280x720 --write-movie out.avi \
 ##     --fixed-fps 30 --path . -s tests/showcase.gd -- --clip=combat
-## Clips: locomotion, movement, gait, falls, terrain, ledges, objects, combat, hazards
+## Clips: locomotion, follow, movement, gait, falls, terrain, ledges, objects, combat, hazards
 
 var main: Node3D
 var player: PlayerController
@@ -173,6 +173,21 @@ func clip_locomotion() -> void:
 	say("Down a 30° slope: feet tilt to the ground")
 	await drive(Vector3.BACK * 0.5, 3.0, -1.6, {}, 0.0)
 	await drive(Vector3.ZERO, 1.0, -1.6, {}, 0.0)
+
+
+## Three-quarter view from behind (like a third-person game camera): stroll, walk, run.
+func clip_follow() -> void:
+	main.hud.get_child(0).visible = false
+	var o: Vector3 = main.markers.open + Vector3(0, 0, 40)
+	await spot(o, 0.0, 0.7, -0.28, 2.3)
+	say("Stroll")
+	await drive(Vector3.FORWARD * 0.45, 3.0, 0.7)
+	say("Walk / jog")
+	await drive(Vector3.FORWARD, 3.0, 0.7)
+	say("Run")
+	await drive(Vector3.FORWARD, 3.0, 0.7, {"run": true})
+	say("Stop")
+	await drive(Vector3.ZERO, 2.0, 0.7)
 
 
 ## Side view on the legs: stroll, walk, run, stop, turns.

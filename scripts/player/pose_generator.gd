@@ -337,8 +337,9 @@ func _add_gait_motion(out: Dictionary, w: float) -> void:
 	re.z += 0.06 * sway * (1.0 - r) * amt
 	# Running: lower, bouncing (lowest at mid-stance), leaning into the run.
 	var psi := fmod(g.phase * 2.0, 1.0)
-	off.y -= ((0.02 + 0.015 * sp) * cos(TAU * (psi - g.duty)) + 0.02 + 0.03 * sp) * r * amt
-	re.x -= (0.08 * r + 0.14 * sp) * amt
+	off.y -= ((0.02 + 0.015 * sp) * cos(TAU * (psi - g.duty)) + 0.045 + 0.03 * sp) * r * amt
+	var run_lean := (0.13 * r + 0.12 * sp) * amt
+	re.x -= run_lean
 	# Hips turn with the forward leg, shoulders counter-rotate.
 	# Busy arms (attacking, guarding, carrying) keep the shoulders square instead.
 	var twist := -cos(ph) * lerpf(0.12, 0.2, r)
@@ -348,15 +349,23 @@ func _add_gait_motion(out: Dictionary, w: float) -> void:
 	_rot(bones, &"spine", Vector3(0, -0.6 * twist * arms, 0))
 	_rot(bones, &"chest", Vector3(0, -twist * (amt - 0.3 * arms), 0))
 	# Keep the eyes level against the lean.
-	_rot(bones, &"head", Vector3((0.06 * r + 0.1 * sp) * amt, 0, 0))
+	_rot(bones, &"head", Vector3((0.1 * r + 0.09 * sp) * amt, 0, 0))
 	# Arms swing against the legs; elbows bend more the faster we go.
-	var arm := lerpf(0.42, lerpf(0.6, 0.95, sp), r) * arms
+	# Shoulder swing (+ forward) and elbow bend at the front and back of the swing. Running,
+	# the hands drive back past the hip with the elbow opening, and come forward to about chest
+	# height with the elbow closing; walking, the arms swing loosely with a slight bend.
+	var fwd_a := lerpf(0.3, lerpf(0.32, 0.42, sp), r)
+	var back_a := lerpf(-0.3, lerpf(-0.6, -0.8, sp), r)
+	var elbow_f := lerpf(0.25, lerpf(1.25, 1.35, sp), r)
+	var elbow_b := lerpf(0.05, lerpf(0.85, 0.95, sp), r)
+	# Arms are posed relative to the chest: give back the run lean so they still hang from the
+	# shoulders instead of tilting back with the torso.
+	var comp := run_lean * _arms_free
 	var sw := cos(ph - 0.35)
-	var elbow := lerpf(0.3, lerpf(1.1, 1.4, sp), r) * arms
-	_rot(bones, &"upper_arm_l", Vector3(-arm * sw + 0.05 * r * arms, 0, -0.08 * r * arms))
-	_rot(bones, &"upper_arm_r", Vector3(arm * sw + 0.05 * r * arms, 0, 0.08 * r * arms))
-	_rot(bones, &"forearm_l", Vector3(elbow + 0.25 * arms * maxf(-sw, 0.0), 0, 0))
-	_rot(bones, &"forearm_r", Vector3(elbow + 0.25 * arms * maxf(sw, 0.0), 0, 0))
+	for s in [["l", -sw, -1.0], ["r", sw, 1.0]]:
+		var k: float = (float(s[1]) + 1.0) * 0.5   # 0 = arm fully back, 1 = fully forward
+		_rot(bones, StringName("upper_arm_" + s[0]), Vector3(lerpf(back_a, fwd_a, k) * arms + comp, 0, 0.1 * float(s[2]) * r * arms))
+		_rot(bones, StringName("forearm_" + s[0]), Vector3(lerpf(elbow_b, elbow_f, k) * arms, 0, 0))
 	out.bones = bones
 	out.root_rot = (out.root_rot as Quaternion) * Quaternion.from_euler(re)
 	out.root_offset = (out.root_offset as Vector3) + off
