@@ -192,7 +192,9 @@ func foot_alignment(side: String) -> float:
 	var q := PhysicsRayQueryParameters3D.create(p + Vector3.UP * 0.5, p + Vector3.DOWN * 1.5,
 		InputSetup.LAYER_WORLD | InputSetup.LAYER_DETAIL)
 	var hit := player.get_world_3d().direct_space_state.intersect_ray(q)
-	return foot.global_basis.y.normalized().dot(hit.normal) if hit else 0.0
+	# The displayed foot (what the skin shows; with mocap, calm legs show their animation).
+	var shown := player.rig.display_transform(foot as PuppetBone).basis
+	return shown.y.normalized().dot(hit.normal) if hit else 0.0
 
 
 func open() -> Vector3:
@@ -575,10 +577,19 @@ func test_crowd_layer() -> void:
 	await physics_frame
 
 
+## Whatever drives the legs: the mocap LocomotionPlayer (when clips are installed) or the
+## procedural FootPlanner. Both expose stance / swing / feet per side.
+func steps():
+	return player.pose_gen.loco if player.pose_gen._clip_w > 0.5 else player.pose_gen.gait
+
+
+func mocap_on() -> bool:
+	return player.pose_gen._clip_w > 0.5
+
+
 ## Planted feet don't slide, swinging feet clear the ground, at stroll / walk / run.
 func test_gait_planted_feet() -> void:
 	print("gait: planted feet, swing clearance")
-	var g: FootPlanner = player.pose_gen.gait
 	for spec in [["stroll", 0.45, false, 0.08], ["walk", 1.0, false, 0.15], ["run", 1.0, true, 0.3]]:
 		await place(open(), 0.4)
 		inp(Vector2(0, -spec[1]), spec[2])
@@ -589,6 +600,7 @@ func test_gait_planted_feet() -> void:
 		var clear := 0.0
 		var lo := INF
 		var knee := INF
+		var g = steps()
 		for i in int(1.5 / TICK):
 			await physics_frame
 			lo = minf(lo, player.rig.pelvis().global_position.y - player.global_position.y)
@@ -621,7 +633,8 @@ func knee_bend(s: String) -> float:
 	var ankle := ft * (foot.def.pivot - foot.def.center)
 	var dir := (ankle - hip).normalized()
 	var off := (knee - hip) - dir * (knee - hip).dot(dir)
-	var fwd := -ft.basis.z
+	# Forward = where the hips face (a swinging foot may point down or back, e.g. sprinting).
+	var fwd := -r.display_transform(r.pelvis()).basis.z
 	fwd.y = 0.0
 	return off.dot(fwd.normalized())
 
@@ -693,7 +706,8 @@ func test_gait_arms_contralateral() -> void:
 		inp()
 		var cl := correlation(arm_l, legs)
 		var cr := correlation(arm_r, legs)
-		check("%s: left arm swings with the right leg, right arm with the left" % spec[0], cl > 0.7 and cr < -0.7,
+		var need := 0.45 if mocap_on() else 0.7   # mocap arm swing is looser than the procedural one
+		check("%s: left arm swings with the right leg, right arm with the left" % spec[0], cl > need and cr < -need,
 			"(left arm vs right-left legs %.2f, right arm %.2f)" % [cl, cr])
 
 
@@ -701,10 +715,10 @@ func test_gait_arms_contralateral() -> void:
 ## leans into the turns, knees keep bending forward.
 func test_gait_turns() -> void:
 	print("gait: slalom and turn-around")
-	var g: FootPlanner = player.pose_gen.gait
 	await place(open() + Vector3(0, 0, 20), 0.4)
 	inp(Vector2(0, -1), true)
 	await seconds(1.5)
+	var g = steps()
 	var cross := -INF
 	var twist := 0.0
 	var knee := INF
@@ -770,9 +784,9 @@ func test_mocap_import() -> void:
 	var cr := 0
 	var both_air := 0
 	for f in walk.frames:
-		cl += walk.contact_l[f]
-		cr += walk.contact_r[f]
-		if walk.contact_l[f] == 0 and walk.contact_r[f] == 0:
+		cl += walk.support_l[f]
+		cr += walk.support_r[f]
+		if walk.support_l[f] == 0 and walk.support_r[f] == 0:
 			both_air += 1
 	check("foot contacts found, alternating with double support",
 		cl > walk.frames * 0.45 and cr > walk.frames * 0.45 and both_air == 0 and walk.touchdown_l >= 0,

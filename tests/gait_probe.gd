@@ -26,8 +26,8 @@ func _run() -> void:
 	player.use_external_input = true
 	for spec in [["stroll", 0.45, false], ["walk", 1.0, false], ["run", 1.0, true]]:
 		var r: Dictionary = await measure(spec[1], spec[2])
-		print("GAIT %-6s speed %.2f m/s | slip %.3f m/s | clearance %.2f m | duty %.2f | cadence %.2f steps/s | pelvis min %.2f m" % [
-			spec[0], r.speed, r.slip, r.clearance, r.duty, r.cadence, r.pelvis])
+		print("GAIT %-6s speed %.2f m/s | slip %.3f m/s | clearance %.2f m | duty %.2f | cadence %.2f steps/s | pelvis min %.2f m | mocap %.1f" % [
+			spec[0], r.speed, r.slip, r.clearance, r.duty, r.cadence, r.pelvis, r.mocap])
 	quit()
 
 
@@ -39,7 +39,8 @@ func measure(stick: float, run: bool) -> Dictionary:
 	player.external_input = {"move": Vector2(0, -stick), "run": run}
 	for i in int(2.5 / TICK):   # reach steady speed
 		await physics_frame
-	var g: FootPlanner = player.pose_gen.gait
+	# Whichever drives the legs: mocap clips (LocomotionPlayer) or the procedural FootPlanner.
+	var g = player.pose_gen.loco if player.pose_gen._clip_w > 0.5 else player.pose_gen.gait
 	var prev := {}
 	var slip := 0.0
 	var slip_n := 0
@@ -62,5 +63,6 @@ func measure(stick: float, run: bool) -> Dictionary:
 				clear = maxf(clear, p.y - 0.035 - gy)
 			prev[s] = p
 	player.external_input = {}
-	return {"speed": speed, "slip": slip / maxf(slip_n, 1), "clearance": clear, "duty": g.duty,
-		"cadence": g.cadence, "pelvis": pelvis}
+	return {"speed": speed, "slip": slip / maxf(slip_n, 1), "clearance": clear,
+		"duty": g.duty if g is FootPlanner else -1.0, "cadence": g.cadence if g is FootPlanner else -1.0, "pelvis": pelvis,
+		"mocap": player.pose_gen._clip_w}

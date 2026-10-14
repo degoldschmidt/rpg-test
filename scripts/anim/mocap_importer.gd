@@ -39,7 +39,7 @@ const SRC_TO_RIG := Basis(Vector3.UP, PI)
 const FPS := 60.0
 const CACHE_DIR := "user://mocap_cache"
 const LOOP_HINTS := ["idle", "walk", "jog", "run", "sprint"]
-const ONE_SHOT_HINTS := ["start", "stop", "turn", "to "]
+const ONE_SHOT_HINTS := ["start", "stop", "turn", "to ", "stairs", "wall", "climb", "jump"]
 
 
 ## "mixamorig:LeftArm", "mixamorig_LeftArm", "mixamorig1:LeftArm" -> "LeftArm".
@@ -259,6 +259,7 @@ static func import_animation(sk: Skeleton3D, anim: Animation, skel_xf: Transform
 	clip.rot.resize(n * nbones * 4)
 	clip.root_rot.resize(n * 4)
 	var ankles := {&"l": PackedVector3Array(), &"r": PackedVector3Array()}
+	var soles := {&"l": [], &"r": []}   # per frame [heel, toe] in clip space
 	for f in n:
 		var wr: Dictionary = world_rot[f]
 		var yb := Basis(Vector3.UP, root_yaw[f])
@@ -273,33 +274,64 @@ static func import_animation(sk: Skeleton3D, anim: Animation, skel_xf: Transform
 		# Puppet FK for the ankles (the puppet's own leg proportions).
 		var pel_xf := Transform3D(wr[&"pelvis"], root_pos[f] + yb * ((defs[&"pelvis"] as BoneDef).center + off))
 		for sd: StringName in [&"l", &"r"]:
-			ankles[sd].append(_ankle(defs, wr, pel_xf, sd))
-	# Feet relative to the root, and contacts: low and nearly still in clip space.
+			var ank := _ankle(defs, wr, pel_xf, sd)
+			ankles[sd].append(ank)
+			var fb: Basis = wr[StringName("foot_" + sd)]
+			soles[sd].append([ank + fb * FootPlanner.HEEL, ank + fb * FootPlanner.TOE])
+	# Feet relative to the root, and contacts. Support: the heel or the toe is on the ground (low)
+	# and nearly still in clip space (heel strike and toe-off count). Contact (where the foot gets
+	# locked): the ankle itself is down and still, i.e. the foot is flat; around heel strike and
+	# toe-off the clip's own heel/toe roll plays unlocked.
 	for sd: StringName in [&"l", &"r"]:
 		var a: PackedVector3Array = ankles[sd]
+		var so: Array = soles[sd]
 		var lo := INF
+		var alo := INF
+		for hs: Array in so:
+			lo = minf(lo, minf((hs[0] as Vector3).y, (hs[1] as Vector3).y))
 		for p in a:
-			lo = minf(lo, p.y)
+			alo = minf(alo, p.y)
+		var flat := PackedByteArray()
+		flat.resize(n)
 		var c := PackedByteArray()
 		c.resize(n)
+		for f in n:
+			var nf2 := (f + 1) % n if loop else mini(f + 1, n - 1)
+			var pf2 := (f - 1 + n) % n if loop else maxi(f - 1, 0)
+			var span2 := 2 if loop or (f > 0 and f < n - 1) else 1
+			var da := a[nf2] - a[pf2]
+			var still := (loop and (f == 0 or f == n - 1)) or Vector2(da.x, da.z).length() * FPS / span2 < 0.35
+			flat[f] = 1 if a[f].y < alo + 0.03 and still else 0
 		for f in n:
 			var nf := (f + 1) % n if loop else mini(f + 1, n - 1)
 			var pf := (f - 1 + n) % n if loop else maxi(f - 1, 0)
 			var span := 2 if loop or (f > 0 and f < n - 1) else 1
-			var v := Vector2(a[nf].x - a[pf].x, a[nf].z - a[pf].z).length() * FPS / span
-			if loop and (f == 0 or f == n - 1):
-				v = 0.0 if a[f].y < lo + 0.05 else 99.0   # across the wrap the root jumps a cycle
-			c[f] = 1 if a[f].y < lo + 0.05 and v < 0.6 else 0
+			var wraps := loop and (f == 0 or f == n - 1)   # across the wrap the root jumps a cycle
+			var on := false
+			for k in 2:
+				var p: Vector3 = so[f][k]
+				if p.y > lo + 0.035:
+					continue
+				var d: Vector3 = (so[nf][k] as Vector3) - (so[pf][k] as Vector3)
+				if wraps or Vector2(d.x, d.z).length() * FPS / span < 0.5:
+					on = true
+			c[f] = 1 if on else 0
 		c = _clean(c, loop)
+		flat = _clean(flat, loop)
+		for f in n:   # flat only within support
+			if c[f] == 0:
+				flat[f] = 0
 		var rel := PackedVector3Array()
 		for f in n:
 			rel.append(Basis(Vector3.UP, -root_yaw[f]) * (a[f] - root_pos[f]))
 		if sd == &"l":
 			clip.foot_l = rel
-			clip.contact_l = c
+			clip.contact_l = flat
+			clip.support_l = c
 		else:
 			clip.foot_r = rel
-			clip.contact_r = c
+			clip.contact_r = flat
+			clip.support_r = c
 	var dist := 0.0
 	for f in range(1, n):
 		dist += (root_pos[f] - root_pos[f - 1]).length()
@@ -307,11 +339,22 @@ static func import_animation(sk: Skeleton3D, anim: Animation, skel_xf: Transform
 	clip.turn = 0.0
 	for f in range(1, n):
 		clip.turn += wrapf(root_yaw[f] - root_yaw[f - 1], -PI, PI)
+	# Left touchdowns (support starting): the first one anchors the cycle phase, their spacing is
+	# the cycle length (cycles may hold several strides).
+	var tds: Array[int] = []
 	for f in n:
-		var pf := (f - 1 + n) % n
-		if clip.contact_l[f] == 1 and clip.contact_l[pf] == 0:
-			clip.touchdown_l = f
-			break
+		var pf := (f - 1 + n) % n if loop else f - 1
+		if clip.support_l[f] == 1 and (pf < 0 or clip.support_l[pf] == 0):
+			tds.append(f)
+	if not tds.is_empty():
+		clip.touchdown_l = tds[0]
+	clip.cycle_frames = n
+	if tds.size() >= 2:
+		var gaps: Array[int] = []
+		for i in range(1, tds.size()):
+			gaps.append(tds[i] - tds[i - 1])
+		gaps.sort()
+		clip.cycle_frames = gaps[gaps.size() / 2]
 	return clip
 
 

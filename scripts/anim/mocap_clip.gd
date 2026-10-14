@@ -23,15 +23,36 @@ const BONES: Array[StringName] = [
 @export var root_yaw := PackedFloat32Array()   ## root heading in clip space (facing -Z = 0)
 @export var foot_l := PackedVector3Array()     ## ankle relative to the root, root frame
 @export var foot_r := PackedVector3Array()
-@export var contact_l := PackedByteArray()
+@export var contact_l := PackedByteArray()   ## foot flat on the ground: lock it here
 @export var contact_r := PackedByteArray()
+@export var support_l := PackedByteArray()   ## heel or toe on the ground (incl. heel strike, toe-off)
+@export var support_r := PackedByteArray()
 @export var speed := 0.0                       ## average ground speed (m/s)
 @export var turn := 0.0                        ## total heading change over the clip (rad)
 @export var touchdown_l := -1                  ## frame of the first left-foot touchdown (cycles)
+@export var cycle_frames := 0                  ## frames per gait cycle (a clip may hold several)
 
 
 func length() -> float:
 	return frames / fps
+
+
+## One gait cycle (left touchdown to the next), which may be shorter than the clip.
+func cycle_length() -> float:
+	return (cycle_frames if cycle_frames > 0 else frames) / fps
+
+
+## Seconds from time t until this foot's flat contact ends (0 if it isn't planted).
+func contact_left(side: StringName, t: float) -> float:
+	var c := contact_l if side == &"l" else contact_r
+	# Nearest frame, as sample() picks contacts.
+	var f := int(fposmod(round(t * fps), frames)) if loop else clampi(int(round(t * fps)), 0, frames - 1)
+	var k := 0
+	while k < frames and c[(f + k) % frames if loop else mini(f + k, frames - 1)] == 1:
+		k += 1
+		if not loop and f + k >= frames:
+			break
+	return k / fps
 
 
 ## Pose at time t (seconds; wrapped for loops, clamped otherwise), interpolated between frames.

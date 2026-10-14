@@ -18,6 +18,7 @@ var gait := FootPlanner.new()
 static var use_mocap := true
 var loco: LocomotionPlayer
 var _clip_w := 0.0       ## 0 procedural .. 1 mocap ground locomotion
+var _attack_w := 0.0
 var _kick_w := 0.0
 var _arms_free := 1.0   ## arm swing and torso twist give way while the arms are busy
 var _root := Transform3D()
@@ -316,6 +317,7 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	_bank = lerpf(_bank, bank_t if stepping else 0.0, 1.0 - exp(-6.0 * dt))
 	var gw := gait.weight
 	_kick_w = move_toward(_kick_w, 1.0 if atk.get("kind", &"") == &"kick" else 0.0, dt * 8.0)
+	_attack_w = move_toward(_attack_w, 0.0 if atk.is_empty() else 1.0, dt * 12.0)
 	var busy: bool = not atk.is_empty() or c.get("guard", false) or arm_mode != &"" or not hand_targets.is_empty() \
 		or mode == &"stagger"
 	_arms_free = move_toward(_arms_free, 0.0 if busy else 1.0, dt * (12.0 if busy else 3.0))
@@ -342,6 +344,7 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 		out["feet"] = gait.feet if _clip_w < 0.5 else loco.feet
 		out["feet_w"] = {&"l": loco.weight, &"r": loco.weight * (1.0 - _kick_w)}
 		out["foot_ik"] = 0.0
+		out["fk_knees"] = _clip_w >= 0.5
 		return out
 	if gw > 0.001:
 		_add_gait_motion(out, gw, dt)
@@ -357,18 +360,21 @@ func _apply_clip(out: Dictionary, clip: Dictionary, w: float) -> void:
 	var cb: Dictionary = clip.bones
 	var bones := {}
 	var arms_proc := 1.0 - _arms_free
+	var attacking := _attack_w
 	for b in BONES:
 		var own := 0.0
 		if String(b).begins_with("upper_arm") or String(b).begins_with("forearm") or String(b).begins_with("hand"):
 			own = arms_proc
-		elif b == &"chest" or b == &"spine":
-			own = arms_proc * 0.6
+		elif b == &"chest" or b == &"spine" or b == &"head":
+			own = maxf(arms_proc * 0.6, attacking)   # strikes are thrown from the torso
 		elif b in [&"thigh_r", &"shin_r", &"foot_r"]:
 			own = _kick_w
 		bones[b] = (cb[b] as Quaternion).slerp(proc[b], maxf(1.0 - w, own))
 	out.bones = bones
-	out.root_rot = (clip.root_rot as Quaternion).slerp(out.root_rot, 1.0 - w) * Quaternion.from_euler(Vector3(0, 0, _bank * w))
-	out.root_offset = (clip.root_offset as Vector3).lerp(out.root_offset, 1.0 - w) + Vector3(-sin(_bank * w) * 0.95, 0, 0)
+	# A strike also owns the hips (it is thrown from the stance, not from the idle sway).
+	var root_proc := maxf(1.0 - w, _attack_w)
+	out.root_rot = (clip.root_rot as Quaternion).slerp(out.root_rot, root_proc) * Quaternion.from_euler(Vector3(0, 0, _bank * w))
+	out.root_offset = (clip.root_offset as Vector3).lerp(out.root_offset, root_proc) + Vector3(-sin(_bank * w) * 0.95, 0, 0)
 
 
 ## Pelvis, torso and arm motion that goes with the steps, layered on top of the smoothed pose

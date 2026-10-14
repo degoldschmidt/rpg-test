@@ -245,7 +245,8 @@ func _leg_ik(out: Dictionary, root: Transform3D, pose: Dictionary) -> Dictionary
 		var ankle := _pivot(out, foot).lerp(want.origin, w)
 		var b := Basis(fk_basis.get_rotation_quaternion().slerp(want.basis.get_rotation_quaternion(), w))
 		_solve_two_bone(out, StringName("thigh_" + s), StringName("shin_" + s), foot,
-			ankle, Quaternion(b * fk_basis.inverse()), _knee_dir(root, want.basis, s), false, true)
+			ankle, Quaternion(b * fk_basis.inverse()), _knee_dir(root, want.basis, s), false,
+			not pose.get("fk_knees", false))   # mocap: keep the clip's own knee bend plane
 	return out
 
 

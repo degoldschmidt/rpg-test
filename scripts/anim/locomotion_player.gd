@@ -17,6 +17,8 @@ const PROBE_DOWN := 0.5
 
 ## Clip library shared by all characters. Tests can replace it (set to a Dictionary of clips).
 static var library_override = null
+## Debug: lock planted feet (off = play the clip's feet as they are).
+static var lock_feet := true
 static var _library: Dictionary = {}
 static var _loaded := false
 
@@ -33,8 +35,11 @@ var stance := {&"l": 0.0, &"r": 0.0}
 var swing := {&"l": -1.0, &"r": -1.0}
 var _lock := {}           ## side -> locked ankle position (world) while planted
 var _lock_t := {&"l": 0.0, &"r": 0.0}
+var _lock_dur := {&"l": 0.3, &"r": 0.3}
+var _lock_basis := {}     ## side -> foot orientation held while planted
+var lock_err := {&"l": Vector3.ZERO, &"r": Vector3.ZERO}   ## debug: locked foot minus the clip's foot
 var _release := {&"l": 1.0, &"r": 1.0}   ## 0..1 blend from the released lock back to the clip
-var _release_from := {}
+var _release_from := {}   ## side -> lock offset from the clip foot at lift-off
 var _prev_contact := {&"l": true, &"r": true}
 var _prev_vel_yaw := 0.0
 var active := false
@@ -65,6 +70,24 @@ func set_library(lib: Dictionary) -> void:
 		elif c.touchdown_l >= 0:
 			cycles.append(c)
 	cycles.sort_custom(func(a, b): return a.speed < b.speed)
+	# One clip per gait and speed band: of near-duplicates (within 0.4 m/s, both walking or both
+	# running), keep the faster; walking and running gaits are kept apart.
+	var kept: Array[MocapClip] = []
+	for c: MocapClip in cycles:
+		if not kept.is_empty() and c.speed - kept[-1].speed < 0.4 and is_running(c) == is_running(kept[-1]):
+			kept[-1] = c
+		else:
+			kept.append(c)
+	cycles = kept
+
+
+## A running gait has a flight phase (both feet off the ground for part of the cycle).
+static func is_running(c: MocapClip) -> bool:
+	var air := 0
+	for f in c.frames:
+		if c.support_l[f] == 0 and c.support_r[f] == 0:
+			air += 1
+	return air > c.frames * 0.08
 
 
 func has_clips() -> bool:
@@ -113,7 +136,7 @@ func update(c: Dictionary, dt: float) -> Dictionary:
 				b = cycles[i + 1]
 				w = clampf((v - a.speed) / (b.speed - a.speed), 0.0, 1.0)
 				break
-	var cyc_len := lerpf(a.length(), b.length(), w)
+	var cyc_len := lerpf(a.cycle_length(), b.cycle_length(), w)
 	var cyc_speed := lerpf(a.speed, b.speed, w)
 	# Faster than the fastest clip: quicker steps (cadence), the clip's stride stays.
 	var rate := clampf(v / maxf(cyc_speed, 0.01), 0.45, 2.2)
@@ -142,40 +165,67 @@ func update(c: Dictionary, dt: float) -> Dictionary:
 		var rel: Vector3 = (pose.feet as Dictionary)[s]
 		var clip_pos := root * rel
 		var g := _ground(space, clip_pos, root.origin.y)
-		clip_pos.y = g + rel.y
+		clip_pos.y = g.y + rel.y
 		var fb := pel * Basis(bones[StringName("thigh_" + s)] as Quaternion) * Basis(bones[StringName("shin_" + s)] as Quaternion) \
 			* Basis(bones[StringName("foot_" + s)] as Quaternion)
-		var planted: bool = (pose.contact as Dictionary)[s]
+		# On a slope, a foot near the ground tilts with it.
+		var n: Vector3 = g.normal
+		var low := 1.0 - smoothstep(0.1, 0.2, rel.y)
+		if low > 0.0 and not n.is_equal_approx(Vector3.UP):
+			fb = Basis(Quaternion(Vector3.UP, n).slerp(Quaternion.IDENTITY, 1.0 - low)) * fb
+		var planted: bool = (pose.contact as Dictionary)[s] and lock_feet
+		if planted:
+			# A planted foot sits flat on the ground (on a slope, tilted with it).
+			fb = Basis(Quaternion(fb.y.normalized(), n)) * fb
 		if planted and (not _prev_contact[s] or not _lock.has(s)):
+			_lock_basis[s] = fb
 			_lock[s] = clip_pos
 			_lock_t[s] = 0.0
+			var dom := a if w < 0.5 else b
+			_lock_dur[s] = maxf(dom.contact_left(s, _cycle_time(dom)) / maxf(rate, 0.1), 0.05)
 		if planted and _lock.has(s) and (_lock[s] as Vector3).distance_to(clip_pos) > 0.45:
 			_lock[s] = clip_pos   # far off the clip (turned round, pushed): re-plant
+			_lock_basis[s] = fb
+		if planted and _lock_basis.has(s):
+			# A planted foot keeps its orientation, except turning with the body (pivot on the spot).
+			var lb: Basis = _lock_basis[s]
+			var turn := wrapf(_yaw_of(fb) - _yaw_of(lb), -PI, PI)
+			if absf(turn) > 0.6:
+				lb = Basis(Vector3.UP, turn - signf(turn) * 0.6) * lb
+				_lock_basis[s] = lb
+			fb = lb
 		if not planted and _prev_contact[s] and _lock.has(s):
-			_release_from[s] = _lock[s]
+			# Lift-off: fade out the lock's (small) offset from the clip's foot, so the foot follows
+			# the clip's swing right away instead of being dragged from where it stood.
+			_release_from[s] = (_lock[s] as Vector3) - clip_pos
 			_release[s] = 0.0
 			_lock.erase(s)
 		_prev_contact[s] = planted
 		var p := clip_pos
+		lock_err[s] = (_lock[s] as Vector3) - clip_pos if _lock.has(s) else Vector3.ZERO
 		if planted and _lock.has(s):
 			p = _lock[s]
 			_lock_t[s] += dt
-			stance[s] = clampf(_lock_t[s] / maxf(cyc_len * 0.5, 0.1), 0.0, 1.0)
+			stance[s] = clampf(_lock_t[s] / float(_lock_dur.get(s, 0.3)), 0.0, 1.0)
 			swing[s] = -1.0
 		else:
 			_release[s] = minf(float(_release[s]) + dt / 0.15, 1.0)
 			if _release_from.has(s) and float(_release[s]) < 1.0:
-				var k := smoothstep(0.0, 1.0, _release[s])
-				p = (_release_from[s] as Vector3).lerp(clip_pos, k)
+				p = clip_pos + (_release_from[s] as Vector3) * (1.0 - smoothstep(0.0, 1.0, _release[s]))
 			stance[s] = -1.0
 			swing[s] = 0.5
 		feet[s] = Transform3D(fb.orthonormalized(), p)
 	return {"bones": pose.bones, "root_rot": pose.root_rot, "root_offset": pose.root_offset}
 
 
+static func _yaw_of(b: Basis) -> float:
+	var f := -b.z
+	return atan2(-f.x, -f.z)
+
+
 ## Time in the clip for the shared phase (phase 0 = that clip's left touchdown).
 func _cycle_time(c: MocapClip) -> float:
-	return fposmod(float(c.touchdown_l) / c.fps + phase * c.length(), c.length())
+	return fposmod(float(c.touchdown_l) / c.fps + phase * c.cycle_length(), c.length())
 
 
 static func _blend(a: Dictionary, b: Dictionary, w: float) -> Dictionary:
@@ -193,11 +243,12 @@ static func _blend(a: Dictionary, b: Dictionary, w: float) -> Dictionary:
 	}
 
 
-func _ground(space: PhysicsDirectSpaceState3D, p: Vector3, ref_y: float) -> float:
+## Ground height and normal under p (no space: flat ground at the root's height).
+func _ground(space: PhysicsDirectSpaceState3D, p: Vector3, ref_y: float) -> Dictionary:
 	if space:
 		var q := PhysicsRayQueryParameters3D.create(Vector3(p.x, ref_y + PROBE_UP, p.z),
 			Vector3(p.x, ref_y - PROBE_DOWN, p.z), RagdollRig.IK_MASK)
 		var hit := space.intersect_ray(q)
 		if hit and (hit.normal as Vector3).y > 0.6:
-			return (hit.position as Vector3).y
-	return ref_y
+			return {"y": (hit.position as Vector3).y, "normal": hit.normal}
+	return {"y": ref_y, "normal": Vector3.UP}
