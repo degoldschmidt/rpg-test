@@ -6,13 +6,14 @@ extends CharacterBody3D
 
 signal state_changed(old_state: State, new_state: State)
 
-enum State { IDLE, WALK, RUN, CROUCH, SLIDE, AIR, ROLL, STUMBLE, RAGDOLL, GET_UP, LEDGE_HANG, CLIMB, GRAB }
+enum State { IDLE, WALK, RUN, CROUCH, SLIDE, AIR, ROLL, STUMBLE, RAGDOLL, GET_UP, LEDGE_HANG, CLIMB, GRAB, ATTACK, STAGGER }
 
 const CROUCH_STATES: Array[State] = [State.CROUCH, State.SLIDE, State.ROLL, State.CLIMB]
 const JUMP_STATES: Array[State] = [State.IDLE, State.WALK, State.RUN, State.CROUCH, State.SLIDE]
 
 @export var config: MovementConfig
 @export var body_color := Color(0.22, 0.42, 0.82)
+@export var skin_color := Color(0.62, 0.5, 0.42)
 
 var state: State = State.IDLE
 var state_time := 0.0
@@ -25,6 +26,8 @@ var external_input := {"move": Vector2.ZERO, "jump": false, "crouch": false, "ru
 
 var rig: RagdollRig
 var skin: HumanoidSkin
+var combat: CombatComponent
+var face_target: Node3D = null      ## AI: keep turning toward this while slow / guarding / attacking
 var pose_gen := PoseGenerator.new()
 
 ## Debug readouts.
@@ -68,7 +71,7 @@ func _ready() -> void:
 	if config == null:
 		config = MovementConfig.new()
 	collision_layer = InputSetup.LAYER_PROXY
-	collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PROPS | InputSetup.LAYER_PROXY_ONLY
+	collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PROPS | InputSetup.LAYER_PROXY_ONLY | InputSetup.LAYER_PROXY
 	floor_max_angle = deg_to_rad(50.0)
 	floor_snap_length = 0.35
 	floor_constant_speed = true
@@ -90,9 +93,15 @@ func _ready() -> void:
 	rig.build(root_transform(), body_color)
 	skin = HumanoidSkin.new()
 	skin.name = "Skin"
+	skin.skin_color = skin_color
 	rig.add_child(skin)
 	skin.setup(rig)
 	rig.set_bodies_visible(false)
+	combat = CombatComponent.new()
+	combat.name = "Combat"
+	add_child(combat)
+	combat.setup(self)
+	add_to_group("characters")
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -155,19 +164,22 @@ func _physics_process(dt: float) -> void:
 		_:
 			_update_locomotion(dt)
 	_update_objects(dt)
+	combat.physics_update(dt, _in)
 	_update_puppet(dt)
 
 
 func _read_input() -> Dictionary:
 	if use_external_input:
 		var d := {"move": Vector2.ZERO, "jump": false, "crouch": false, "run": false, "roll": false,
-			"interact": false, "throw": false}
+			"interact": false, "throw": false, "punch": false, "kick": false, "guard": false}
 		d.merge(external_input, true)
 		d["jump_pressed"] = d.get("jump", false) and not _prev_ext.get("jump", false)
 		d["roll_pressed"] = d.get("roll", false) and not _prev_ext.get("roll", false)
 		d["crouch_pressed"] = d.get("crouch", false) and not _prev_ext.get("crouch", false)
 		d["interact_pressed"] = d.get("interact", false) and not _prev_ext.get("interact", false)
 		d["throw_pressed"] = d.get("throw", false) and not _prev_ext.get("throw", false)
+		d["punch_pressed"] = d.get("punch", false) and not _prev_ext.get("punch", false)
+		d["kick_pressed"] = d.get("kick", false) and not _prev_ext.get("kick", false)
 		_prev_ext = external_input.duplicate()
 		return d
 	return {
@@ -181,6 +193,9 @@ func _read_input() -> Dictionary:
 		"roll_pressed": Input.is_action_just_pressed("roll"),
 		"interact_pressed": Input.is_action_just_pressed("interact"),
 		"throw_pressed": Input.is_action_just_pressed("throw"),
+		"punch_pressed": Input.is_action_just_pressed("punch"),
+		"kick_pressed": Input.is_action_just_pressed("kick"),
+		"guard": Input.is_action_pressed("guard"),
 	}
 
 
@@ -215,6 +230,12 @@ func _update_locomotion(dt: float) -> void:
 				_set_state(State.AIR)
 		State.STUMBLE:
 			if state_time >= cfg.stumble_duration:
+				_set_state(_ground_state(wish))
+		State.ATTACK:
+			if combat.attack == &"":
+				_set_state(_ground_state(wish))
+		State.STAGGER:
+			if state_time >= cfg.stagger_time and on_floor:
 				_set_state(_ground_state(wish))
 		State.SLIDE:
 			if not on_floor and _coyote <= 0.0:
@@ -265,6 +286,15 @@ func _update_locomotion(dt: float) -> void:
 			hv = dir * sp
 		State.STUMBLE:
 			hv = hv.move_toward(Vector3.ZERO, cfg.ground_friction * 1.5 * dt)
+		State.ATTACK:
+			var lunging := combat.attack_phase() in [&"windup", &"active"]
+			var d: Dictionary = CombatComponent.ATTACKS.get(combat.attack, {})
+			var want: Vector3 = facing_dir() * float(d.get("lunge", 0.0)) if lunging else Vector3.ZERO
+			# Momentum carries into the attack: slowing down from a run takes a moment.
+			var rate := 6.0 if hv.length() > want.length() + 0.5 else 14.0
+			hv = hv.move_toward(want, rate * dt)
+		State.STAGGER:
+			hv = hv.move_toward(Vector3.ZERO, cfg.stagger_friction * dt)
 		_:
 			hv = _ground_velocity(hv, wish, dt)
 
@@ -326,7 +356,7 @@ func _ground_velocity(hv: Vector3, wish: Vector3, dt: float) -> Vector3:
 	var k := clampf(speed / cfg.run_speed, 0.0, 1.0)
 	var tr := lerpf(cfg.turn_rate_slow, cfg.turn_rate_fast, k)
 	dir = dir.rotated(Vector3.UP, clampf(ang, -tr * dt, tr * dt))
-	var tgt := target_speed * amt * carry_speed_factor()
+	var tgt := target_speed * amt * carry_speed_factor() * (config.guard_speed_factor if combat.guarding else 1.0)
 	if speed < tgt:
 		var a := cfg.walk_accel if speed < cfg.walk_speed else cfg.run_accel
 		speed = minf(speed + a * dt, tgt)
@@ -347,9 +377,16 @@ func _ground_state(wish: Vector3) -> State:
 
 
 func _update_facing(dt: float) -> void:
-	if state == State.ROLL or _skidding:
+	if state in [State.ROLL, State.STAGGER] or _skidding:
 		return
 	var hv := Vector3(velocity.x, 0, velocity.z)
+	if face_target and is_instance_valid(face_target) and (combat.guarding or state == State.ATTACK or hv.length() < 2.5):
+		var to := face_target.global_position - global_position
+		if Vector2(to.x, to.z).length() > 0.05:
+			facing_yaw = rotate_toward(facing_yaw, atan2(-to.x, -to.z), 8.0 * dt)
+		return
+	if state == State.ATTACK:
+		return
 	if hv.length() < 0.3:
 		return
 	var target := atan2(-hv.x, -hv.z)
@@ -845,12 +882,40 @@ func _hand_targets() -> Dictionary:
 	return {}
 
 
+# ---------------------------------------------------------------- combat
+
+func can_attack() -> bool:
+	return state in [State.IDLE, State.WALK, State.RUN, State.CROUCH] and _carried == null and _grabbed == null
+
+
+## Called by CombatComponent when an attack starts.
+func begin_attack() -> void:
+	_set_state(State.ATTACK)
+
+
+## Knocked back on our feet: input is ignored until the stagger ends.
+func start_stagger(v: Vector3) -> void:
+	release_objects()
+	velocity = Vector3(v.x, minf(velocity.y, 0.0), v.z)
+	rig.muscle = 0.5
+	_skidding = false
+	_set_state(State.STAGGER)
+	state_time = 0.0
+
+
+## Entry point for melee hits from other characters (see CombatComponent).
+func receive_hit(info: Dictionary) -> void:
+	last_hit = float(info.strength) * 100.0
+	combat.resolve_hit(info)
+
+
 # ---------------------------------------------------------------- ragdoll
 
 ## Hand control to the physical puppet. Optional velocity kick at a point (hazards, combat).
 func enter_ragdoll(dv := Vector3.ZERO, point := Vector3.ZERO) -> void:
 	if state != State.RAGDOLL:
 		release_objects()
+		combat.cancel_attack()
 		_set_state(State.RAGDOLL)
 		_col.disabled = true
 		rig.muscle = 0.0
@@ -932,8 +997,10 @@ func _update_puppet(dt: float) -> void:
 			mode = &"hang"
 		State.CLIMB:
 			mode = &"climb"
-		State.GRAB:
+		State.GRAB, State.ATTACK:
 			mode = &"ground"
+		State.STAGGER:
+			mode = &"stagger"
 	var mv: Vector2 = _in.get("move", Vector2.ZERO)
 	var ctx := {
 		"mode": mode,
@@ -955,6 +1022,7 @@ func _update_puppet(dt: float) -> void:
 	}
 	var hands := _hand_targets()
 	ctx["hand_targets"] = hands
+	ctx.merge(combat.pose_ctx(), true)
 	var pose := pose_gen.compute(ctx, dt)
 	rig.step(dt, root_transform(), velocity if state != State.RAGDOLL else Vector3.ZERO, pose)
 
@@ -983,6 +1051,8 @@ func teleport(pos: Vector3, yaw := 0.0) -> void:
 	_ledge = {}
 	_grab_cooldown = 0.0
 	release_objects()
+	combat.cancel_attack()
+	combat.flinch = {}
 	state = State.IDLE
 	state_time = 0.0
 	rig.muscle = 1.0

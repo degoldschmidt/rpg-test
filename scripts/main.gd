@@ -15,7 +15,8 @@ var markers := {
 	"stairs": Vector3(-32, 0, -1),
 	"mantle_block": Vector3(20, 0, -34),  # front face (facing +Z) of a 1.2 m block
 	"climb_wall": Vector3(30, 0, -33.5),  # front face of an 8 m wide, 3 m tall wall
-	"objects": Vector3(-14, 0, 10),       # props yard: liftable, pushable and too-heavy objects
+	"objects": Vector3(-14, 0, 10),
+	"arena": Vector3(42, 0, 14),          # training dummies: passive, guard, sparring       # props yard: liftable, pushable and too-heavy objects
 	"log": Vector3(0, 0, 35),
 	"sweeper": Vector3(14, 0, 35),
 	"bumper": Vector3(-10, 0, 30),
@@ -26,6 +27,7 @@ var camera_rig: CameraRig
 var hud: DebugHud
 var level: Node3D
 var props := {}
+var dummies := {}
 
 
 func _ready() -> void:
@@ -44,14 +46,94 @@ func _ready() -> void:
 	camera_rig.player = player
 	add_child(camera_rig)
 
+	var a: Vector3 = markers.arena
+	_spawn_dummy("passive", a + Vector3(-3, 0, 0), DummyBrain.Mode.PASSIVE)
+	_spawn_dummy("guard", a + Vector3(1, 0, 0), DummyBrain.Mode.GUARD)
+	_spawn_dummy("sparring", a + Vector3(7, 0, 5), DummyBrain.Mode.SPARRING)
+	props.bag = _punching_bag(a + Vector3(-3, 0, 4))
+
 	hud = DebugHud.new()
 	hud.player = player
 	add_child(hud)
+	hud.watch(player, "You")
+	for n in dummies:
+		hud.watch(dummies[n], "Dummy (%s)" % n)
+
+
+## 30 kg bag hanging from a pin 0.5 m above it, at punch / kick height.
+func _punching_bag(pos: Vector3) -> RigidBody3D:
+	var L := LevelUtil
+	var grey := Color(0.42, 0.43, 0.46)
+	L.box(level, Vector3(0.15, 2.8, 0.15), Transform3D(Basis(), pos + Vector3(0.9, 1.4, 0)), grey)
+	L.box(level, Vector3(1.0, 0.12, 0.12), Transform3D(Basis(), pos + Vector3(0.45, 2.8, 0)), grey)
+	var bag := RigidBody3D.new()
+	bag.name = "PunchingBag"
+	bag.mass = 30.0
+	bag.angular_damp = 1.0
+	bag.linear_damp = 0.2
+	bag.collision_layer = InputSetup.LAYER_PROPS
+	bag.collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PUPPET | InputSetup.LAYER_PROPS
+	var cs := CollisionShape3D.new()
+	var sh := CylinderShape3D.new()
+	sh.radius = 0.22
+	sh.height = 1.2
+	cs.shape = sh
+	bag.add_child(cs)
+	var mi := MeshInstance3D.new()
+	var m := CylinderMesh.new()
+	m.top_radius = 0.22
+	m.bottom_radius = 0.22
+	m.height = 1.2
+	mi.mesh = m
+	mi.material_override = L.mat(Color(0.55, 0.15, 0.12))
+	bag.add_child(mi)
+	var rope := MeshInstance3D.new()
+	var rm := BoxMesh.new()
+	rm.size = Vector3(0.03, 0.5, 0.03)
+	rope.mesh = rm
+	rope.position = Vector3(0, 0.85, 0)
+	rope.material_override = L.mat(Color(0.8, 0.75, 0.6))
+	bag.add_child(rope)
+	level.add_child(bag)
+	bag.global_position = pos + Vector3(0, 1.25, 0)
+	var anchor := StaticBody3D.new()
+	anchor.collision_layer = 0
+	level.add_child(anchor)
+	anchor.global_position = pos + Vector3(0, 2.35, 0)
+	var pin := PinJoint3D.new()
+	level.add_child(pin)
+	pin.global_position = pos + Vector3(0, 2.35, 0)
+	pin.node_a = pin.get_path_to(anchor)
+	pin.node_b = pin.get_path_to(bag)
+	return bag
+
+
+## Training dummy: the same active-ragdoll character, driven by a DummyBrain.
+func _spawn_dummy(dummy_name: String, pos: Vector3, mode: DummyBrain.Mode) -> PlayerController:
+	var d: PlayerController = PLAYER_SCENE.instantiate()
+	d.name = "Dummy_" + dummy_name
+	d.use_external_input = true
+	d.body_color = Color(0.7, 0.2, 0.18)
+	d.skin_color = Color(0.6, 0.3, 0.26)
+	d.position = pos
+	add_child(d)
+	var brain := DummyBrain.new()
+	brain.name = "Brain"
+	brain.mode = mode
+	brain.target = player
+	d.add_child(brain)
+	dummies[dummy_name] = d
+	return d
 
 
 func _physics_process(_dt: float) -> void:
+	if player == null:
+		return
 	if player.global_position.y < -30.0:
 		player.reset()
+	for d: PlayerController in dummies.values():
+		if d.global_position.y < -30.0:
+			d.reset()
 
 
 func _build_environment() -> void:

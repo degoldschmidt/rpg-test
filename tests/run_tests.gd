@@ -33,6 +33,18 @@ func _run() -> void:
 	await test_push_and_pull_crate()
 	await test_heavy_block_is_slower()
 	await test_too_heavy()
+	await test_punch_flinch()
+	await test_punch_combo_stagger()
+	await test_kick_stagger()
+	await test_kick_staggered_knockdown()
+	await test_running_kick_knockdown()
+	await test_guard_blocks_punch()
+	await test_guard_from_behind()
+	await test_kick_breaks_guard()
+	await test_air_hit_knockdown()
+	await test_sparring_hits_player()
+	await test_punch_prop()
+	await test_no_attack_while_carrying()
 	await test_walk_momentum()
 	await test_run_momentum()
 	await test_skid()
@@ -74,9 +86,9 @@ func seconds(s: float) -> void:
 
 
 func inp(move := Vector2.ZERO, run := false, jump := false, crouch := false, roll := false,
-		interact := false, throw := false) -> void:
+		interact := false, throw := false, punch := false, kick := false, guard := false) -> void:
 	player.external_input = {"move": move, "run": run, "jump": jump, "crouch": crouch, "roll": roll,
-		"interact": interact, "throw": throw}
+		"interact": interact, "throw": throw, "punch": punch, "kick": kick, "guard": guard}
 
 
 func press_interact() -> void:
@@ -339,6 +351,259 @@ func test_too_heavy() -> void:
 	check("hint says too heavy", player.interact_hint().begins_with("Too heavy"), "(%s)" % player.interact_hint())
 	await press_interact()
 	check("can't grab it", player.state != PlayerController.State.GRAB and player.is_carrying() == null)
+
+
+# ------------------------------------------------------------------ combat helpers
+
+var _reactions: Array = []   ## [who, kind]
+
+
+func watch_reactions() -> void:
+	if player.combat.reacted.get_connections().size() > 1:
+		return  # already watching (HUD connects one)
+	player.combat.reacted.connect(func(k, _s): _reactions.append(["player", k]))
+	for n in main.dummies:
+		var d: PlayerController = main.dummies[n]
+		d.combat.reacted.connect(func(k, _s): _reactions.append([n, k]))
+
+
+func reactions_of(who: String) -> Array:
+	return _reactions.filter(func(r): return r[0] == who).map(func(r): return r[1])
+
+
+## Reset a dummy to its spot (facing -Z) and stand the player `dist` m in front of it
+## (or behind it), facing it.
+func square_up(dummy_name: String, dist: float, behind := false) -> PlayerController:
+	watch_reactions()
+	var d: PlayerController = main.dummies[dummy_name]
+	d.reset()
+	var p := d.global_position
+	if behind:
+		await place(p + Vector3(0, 0, dist), 0.0, 0.0)
+	else:
+		await place(p + Vector3(0, 0, -dist), 0.0, PI)
+	await seconds(0.6)
+	_reactions.clear()
+	_seen.clear()
+	return d
+
+
+func strike(kind: String) -> void:
+	if kind == "punch":
+		inp(Vector2.ZERO, false, false, false, false, false, false, true)
+	else:
+		inp(Vector2.ZERO, false, false, false, false, false, false, false, true)
+	await physics_frame
+	inp()
+
+
+func max_bone_deviation(c: PlayerController) -> float:
+	var worst := 0.0
+	for b: PuppetBone in c.rig.bones.values():
+		worst = maxf(worst, b.global_position.distance_to(b.target.origin))
+	return worst
+
+
+# ------------------------------------------------------------------ combat tests
+
+func test_punch_flinch() -> void:
+	print("punch -> flinch")
+	var d := await square_up("passive", 1.0)
+	var p0 := d.global_position
+	await strike("punch")
+	check("punch starts an attack", player.state == PlayerController.State.ATTACK)
+	var dev := 0.0
+	var bad_state := false
+	for i in int(0.6 / TICK):
+		await physics_frame
+		dev = maxf(dev, max_bone_deviation(d))
+		bad_state = bad_state or d.state in [PlayerController.State.STAGGER, PlayerController.State.RAGDOLL]
+	check("punch lands as a FLINCH", reactions_of("passive") == [&"flinch"], "(%s)" % [reactions_of("passive")])
+	check("struck part recoils physically", dev > 0.06, "(max bone deviation %.2f m)" % dev)
+	check("flinch doesn't interrupt the target", not bad_state and d.global_position.distance_to(p0) < 0.3)
+	check("attacker returns to normal", player.state != PlayerController.State.ATTACK)
+
+
+func test_punch_combo_stagger() -> void:
+	print("three quick punches -> stagger")
+	var d := await square_up("passive", 1.0)
+	for i in 3:
+		await strike("punch")
+		while player.state == PlayerController.State.ATTACK:
+			await physics_frame
+		await physics_frame
+	await seconds(0.3)
+	var r := reactions_of("passive")
+	check("third punch in a row staggers", r.size() == 3 and r[2] == &"stagger", "(%s)" % [r])
+
+
+func test_kick_stagger() -> void:
+	print("kick -> stagger")
+	var d := await square_up("passive", 1.1)
+	var p0 := d.global_position
+	await strike("kick")
+	var t := await wait_dummy_state(d, PlayerController.State.STAGGER, 1.0)
+	await seconds(0.8)
+	var pushed := d.global_position.distance_to(p0)
+	check("kick STAGGERS", t >= 0.0 and reactions_of("passive") == [&"stagger"], "(%s)" % [reactions_of("passive")])
+	check("stagger knocks the target back", pushed > 0.4, "(%.2f m)" % pushed)
+	check("target recovers on its feet", d.state in [PlayerController.State.IDLE, PlayerController.State.WALK])
+
+
+func wait_dummy_state(d: PlayerController, s: PlayerController.State, timeout: float) -> float:
+	var t := 0.0
+	while t < timeout:
+		if d.state == s:
+			return t
+		await physics_frame
+		t += TICK
+	return -1.0
+
+
+func test_kick_staggered_knockdown() -> void:
+	print("kick on a staggered target -> knockdown")
+	var d := await square_up("passive", 1.1)
+	await strike("kick")
+	await seconds(CombatComponent.ATTACKS[&"kick"].windup - 0.04)
+	d.start_stagger(Vector3.ZERO)  # caught off balance as the kick lands
+	var t := await wait_dummy_state(d, PlayerController.State.RAGDOLL, 1.0)
+	check("kick on a staggered target KNOCKS DOWN", t >= 0.0 and &"knockdown" in reactions_of("passive"), "(%s)" % [reactions_of("passive")])
+	var up := await wait_dummy_state(d, PlayerController.State.IDLE, 8.0)
+	check("knocked-down dummy gets back up", up >= 0.0, "(%.1f s)" % up)
+
+
+func test_running_kick_knockdown() -> void:
+	print("running kick -> knockdown")
+	var d := await square_up("passive", 7.0)
+	inp(Vector2(0, 1), true)
+	while d.global_position.distance_to(player.global_position) > 1.9:
+		await physics_frame
+	inp(Vector2(0, 1), true, false, false, false, false, false, false, true)
+	await physics_frame
+	inp()
+	var t := await wait_dummy_state(d, PlayerController.State.RAGDOLL, 1.0)
+	check("running kick KNOCKS DOWN", t >= 0.0 and &"knockdown" in reactions_of("passive"), "(%s)" % [reactions_of("passive")])
+	var peak := 0.0
+	for i in 60:
+		await physics_frame
+		peak = maxf(peak, d.rig.pelvis().global_position.distance_to(d._spawn.origin + Vector3.UP))
+	check("knockdown sends the body flying", peak > 0.8, "(pelvis moved %.2f m)" % peak)
+	await wait_dummy_state(d, PlayerController.State.IDLE, 8.0)
+
+
+func test_guard_blocks_punch() -> void:
+	print("guard blocks a punch")
+	var d := await square_up("guard", 1.0)
+	await seconds(0.5)
+	check("guard dummy is guarding", d.combat.guarding)
+	await strike("punch")
+	await seconds(0.6)
+	check("punch from the front is BLOCKED", reactions_of("guard") == [&"blocked"], "(%s)" % [reactions_of("guard")])
+	check("still guarding after the block", d.combat.guarding and d.state != PlayerController.State.STAGGER)
+
+
+func test_guard_from_behind() -> void:
+	print("guard doesn't cover the back")
+	var brain: DummyBrain = main.dummies.guard.get_node("Brain")
+	brain.turn_to_target = false
+	var d := await square_up("guard", 1.0, true)
+	await strike("punch")
+	await seconds(0.6)
+	brain.turn_to_target = true
+	check("punch from behind still FLINCHES a guarding target", reactions_of("guard") == [&"flinch"], "(%s)" % [reactions_of("guard")])
+
+
+func test_kick_breaks_guard() -> void:
+	print("kick breaks guard")
+	var d := await square_up("guard", 1.1)
+	await seconds(0.5)
+	await strike("kick")
+	var t := await wait_dummy_state(d, PlayerController.State.STAGGER, 1.0)
+	check("kick BREAKS the guard into a stagger", t >= 0.0 and reactions_of("guard") == [&"guard_break"], "(%s)" % [reactions_of("guard")])
+	check("guard is down for a moment", not d.combat.guarding)
+	await seconds(1.5)
+	check("guard comes back", d.combat.guarding)
+
+
+func test_air_hit_knockdown() -> void:
+	print("airborne target -> knockdown")
+	var d := await square_up("passive", 3.0)
+	d.teleport(d.global_position + Vector3.UP * 2.5)
+	await seconds(0.2)
+	check("target is airborne", d.state == PlayerController.State.AIR)
+	d.receive_hit({"dir": Vector3.BACK, "strength": CombatComponent.ATTACKS[&"kick"].strength,
+		"point": d.rig.pelvis().global_position, "bone": &"spine", "attacker": player, "up": 0.25})
+	check("kick-strength hit in the air KNOCKS DOWN", d.state == PlayerController.State.RAGDOLL)
+	await wait_dummy_state(d, PlayerController.State.IDLE, 8.0)
+
+
+func test_sparring_hits_player() -> void:
+	print("sparring dummy hits the player")
+	var d: PlayerController = main.dummies.sparring
+	var brain: DummyBrain = d.get_node("Brain")
+	d.reset()
+	brain._next_kick = false
+	brain._t = 0.0
+	await place(d.global_position + Vector3(0, 0, -1.3), 0.0, PI)
+	watch_reactions()
+	_reactions.clear()
+	var t := 0.0
+	while reactions_of("player").is_empty() and t < 4.0:
+		await physics_frame
+		t += TICK
+	check("sparring dummy's punch makes the player FLINCH", reactions_of("player") == [&"flinch"], "(%s after %.1f s)" % [reactions_of("player"), t])
+	brain._next_kick = false
+	_reactions.clear()
+	inp(Vector2.ZERO, false, false, false, false, false, false, false, false, true)
+	t = 0.0
+	while reactions_of("player").is_empty() and t < 4.0:
+		await physics_frame
+		t += TICK
+	inp()
+	check("guarding player BLOCKS the dummy's punch", reactions_of("player") == [&"blocked"], "(%s)" % [reactions_of("player")])
+	await place(main.markers.spawn)
+
+
+func test_punch_prop() -> void:
+	print("punching bag")
+	var bag: RigidBody3D = main.props.bag
+	var p := bag.global_position
+	await place(Vector3(p.x, 0, p.z + 0.85), 0.6)
+	var b0 := bag.global_position
+	await strike("punch")
+	var swing := 0.0
+	var v_punch := 0.0
+	for i in int(1.0 / TICK):
+		await physics_frame
+		swing = maxf(swing, Vector2(bag.global_position.x - b0.x, bag.global_position.z - b0.z).length())
+		v_punch = maxf(v_punch, bag.linear_velocity.length())
+	check("punch swings the bag", swing > 0.1, "(%.2f m)" % swing)
+	await seconds(4.0)  # let it settle
+	await place(Vector3(p.x, 0, p.z + 0.85), 0.6)
+	await strike("kick")
+	var v_kick := 0.0
+	for i in int(1.0 / TICK):
+		await physics_frame
+		v_kick = maxf(v_kick, bag.linear_velocity.length())
+	check("kick hits the bag harder", v_kick > v_punch, "(peak %.2f m/s vs %.2f m/s)" % [v_kick, v_punch])
+
+
+func test_no_attack_while_carrying() -> void:
+	print("no attacks while carrying")
+	var box: RigidBody3D = main.props.small_box
+	box.global_position = open() + Vector3(-8, 0.3, 8)
+	box.global_rotation = Vector3.ZERO
+	box.linear_velocity = Vector3.ZERO
+	box.angular_velocity = Vector3.ZERO
+	await seconds(0.5)
+	await face_prop(box, 0.45)
+	await press_interact()
+	await seconds(0.5)
+	await strike("punch")
+	check("can't punch while carrying", player.state != PlayerController.State.ATTACK and player.is_carrying() == box,
+		"(%s, carrying %s)" % [PlayerController.State.keys()[player.state], player.is_carrying()])
+	await press_interact()
+	await seconds(0.5)
 
 
 func test_walk_momentum() -> void:

@@ -25,6 +25,11 @@ static func ensure_actions() -> void:
 	_key("toggle_debug_bodies", [KEY_F2])
 	_key("interact", [KEY_E])
 	_key("throw", [KEY_F])
+	_key("punch", [KEY_J])
+	_key("kick", [KEY_K, KEY_V])
+	_key("guard", [KEY_L])
+	_mouse("punch", MOUSE_BUTTON_LEFT)
+	_mouse("guard", MOUSE_BUTTON_RIGHT)
 
 	_axis("move_left", JOY_AXIS_LEFT_X, -1.0)
 	_axis("move_right", JOY_AXIS_LEFT_X, 1.0)
@@ -34,12 +39,14 @@ static func ensure_actions() -> void:
 	_axis("cam_right", JOY_AXIS_RIGHT_X, 1.0)
 	_axis("cam_up", JOY_AXIS_RIGHT_Y, -1.0)
 	_axis("cam_down", JOY_AXIS_RIGHT_Y, 1.0)
-	_axis("run", JOY_AXIS_TRIGGER_LEFT, 1.0)
+	_axis("guard", JOY_AXIS_TRIGGER_LEFT, 1.0)
+	_axis("kick", JOY_AXIS_TRIGGER_RIGHT, 1.0)
+	_button("punch", JOY_BUTTON_Y)
 	_button("jump", JOY_BUTTON_A)
 	_button("roll", JOY_BUTTON_X)
 	_button("crouch", JOY_BUTTON_B)
 	_button("run", JOY_BUTTON_LEFT_STICK)
-	_button("toggle_ragdoll", JOY_BUTTON_Y)
+	_button("toggle_ragdoll", JOY_BUTTON_DPAD_DOWN)
 	_button("reset_player", JOY_BUTTON_BACK)
 	_button("interact", JOY_BUTTON_RIGHT_SHOULDER)
 	_button("throw", JOY_BUTTON_LEFT_SHOULDER)
@@ -56,6 +63,13 @@ static func _key(action: StringName, keys: Array) -> void:
 		var ev := InputEventKey.new()
 		ev.physical_keycode = k
 		InputMap.action_add_event(action, ev)
+
+
+static func _mouse(action: StringName, button: MouseButton) -> void:
+	_add(action)
+	var ev := InputEventMouseButton.new()
+	ev.button_index = button
+	InputMap.action_add_event(action, ev)
 
 
 static func _axis(action: StringName, axis: JoyAxis, value: float) -> void:
