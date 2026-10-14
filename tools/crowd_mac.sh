@@ -8,12 +8,19 @@
 #   tools/crowd_mac.sh game          play the test level yourself
 #   tools/crowd_mac.sh tests         run the full gameplay test suite
 #
+# Crowd modes take extra options, e.g.:
+#   tools/crowd_mac.sh live --npcs=1000          1000 NPCs (crowd layer)
+#   tools/crowd_mac.sh measure --npcs=10000
+#   tools/crowd_mac.sh live --characters         every NPC a full character (no crowd layer)
+#
 # Set GODOT=/path/to/Godot to use your own Godot 4.5.x binary.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 GODOT_VERSION="4.5.1"
 MODE="${1:-live}"
+shift || true
+EXTRA=("$@")
 OUT="out"
 mkdir -p "$OUT"
 
@@ -48,21 +55,21 @@ echo "Machine: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m), $(
 
 case "$MODE" in
   live)
-    "$GODOT_BIN" --path . --resolution 1600x900 -s tests/crowd.gd -- --live
+    "$GODOT_BIN" --path . --resolution 1600x900 -s tests/crowd.gd -- --live ${EXTRA[@]+"${EXTRA[@]}"}
     ;;
   live-uncapped)
-    "$GODOT_BIN" --path . --resolution 1600x900 -s tests/crowd.gd -- --live --no-vsync
+    "$GODOT_BIN" --path . --resolution 1600x900 -s tests/crowd.gd -- --live --no-vsync ${EXTRA[@]+"${EXTRA[@]}"}
     ;;
   measure)
     "$GODOT_BIN" --headless --fixed-fps 60 --path . -s tests/crowd.gd -- --measure \
-      --timeline="$PWD/$OUT/crowd_mac.json" | grep -E "^CROWD"
+      --timeline="$PWD/$OUT/crowd_mac.json" ${EXTRA[@]+"${EXTRA[@]}"} | grep -E "^CROWD"
     ;;
   video)
     "$GODOT_BIN" --headless --fixed-fps 60 --path . -s tests/crowd.gd -- --measure \
-      --timeline="$PWD/$OUT/crowd_mac.json" | grep -E "^CROWD"
+      --timeline="$PWD/$OUT/crowd_mac.json" ${EXTRA[@]+"${EXTRA[@]}"} | grep -E "^CROWD"
     echo "Recording video (renders offline, takes a minute or two)..."
     "$GODOT_BIN" --path . --resolution 1280x720 --write-movie "$PWD/$OUT/crowd_mac.avi" --fixed-fps 60 \
-      -s tests/crowd.gd -- --timeline="$PWD/$OUT/crowd_mac.json" | grep -E "frames at" || true
+      -s tests/crowd.gd -- --timeline="$PWD/$OUT/crowd_mac.json" ${EXTRA[@]+"${EXTRA[@]}"} | grep -E "frames at" || true
     if command -v ffmpeg >/dev/null 2>&1; then
       ffmpeg -loglevel error -y -i "$OUT/crowd_mac.avi" -c:v libx264 -pix_fmt yuv420p -crf 23 \
         -movflags +faststart "$OUT/crowd_mac.mp4" && rm "$OUT/crowd_mac.avi"
@@ -79,7 +86,7 @@ case "$MODE" in
     GODOT="$GODOT_BIN" tests/run.sh full
     ;;
   *)
-    sed -n '2,12p' "$0"
+    sed -n '2,17p' "$0"
     exit 1
     ;;
 esac

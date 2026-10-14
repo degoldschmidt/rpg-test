@@ -97,6 +97,7 @@ func build(root: Transform3D, body_color: Color) -> void:
 			_add_face(b, d.size.x)
 		add_child(b)
 		b.global_transform = root * Transform3D(Basis(), d.center)
+		b.target = b.global_transform
 		bones[d.name] = b
 		_weak[d.name] = 1.0
 

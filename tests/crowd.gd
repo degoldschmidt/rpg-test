@@ -1,9 +1,12 @@
 extends SceneTree
-## Crowd stress test: the player runs through 100 wandering NPCs (full active-ragdoll characters
-## with LOD). Running into them shoves, staggers or knocks them down.
+## Crowd stress test: the player runs through a crowd of wandering NPCs (100 by default).
+## By default the crowd is a CrowdLayer: plain data drawn with one MultiMesh, where only the
+## nearest 24 NPCs become real active-ragdoll characters. --characters makes every NPC a full
+## PlayerController (with character LOD) instead. Running into NPCs staggers or knocks them down.
 ##
 ## 1) Measure (headless, real CPU time per 60 fps frame = 2 physics ticks + AI + animation + skin):
-##    godot --headless --fixed-fps 60 --path . -s tests/crowd.gd -- --measure --timeline=crowd.json [--npcs=100]
+##    godot --headless --fixed-fps 60 --path . -s tests/crowd.gd -- --measure --timeline=crowd.json \
+##      [--npcs=1000] [--characters]
 ## 2) Video of the same deterministic run, overlaying the measured simulation FPS per frame:
 ##    godot --rendering-driver opengl3 --resolution 1280x720 --write-movie crowd.avi --fixed-fps 60 \
 ##      --path . -s tests/crowd.gd -- --timeline=crowd.json
@@ -14,12 +17,14 @@ extends SceneTree
 const PLAYER_SCENE := preload("res://scenes/player.tscn")
 var NPCS := 100
 const SPACING := 2.6
-const DURATION := 22.0   # seconds of game time
+var DURATION := 22.0   # seconds of game time
 
 var main: Node3D
 var player: PlayerController
 var cam: CameraRig
 var npcs: Array[PlayerController] = []
+var layer: CrowdLayer
+var characters := false
 var measure := false
 var live := false
 var no_vsync := false
@@ -37,6 +42,8 @@ func _initialize() -> void:
 			measure = true
 		elif a == "--live":
 			live = true
+		elif a == "--characters":
+			characters = true
 		elif a == "--no-vsync":
 			no_vsync = true
 		elif a.begins_with("--npcs="):
@@ -60,12 +67,16 @@ func _run() -> void:
 	if not measure and timeline_path != "":
 		timeline = JSON.parse_string(FileAccess.get_file_as_string(timeline_path))
 
-	player.teleport(center + Vector3(0, 0, 26), 0.0)
+	# Big crowds get a longer route through the middle of the crowd.
+	var s := 1.0 if NPCS <= 100 else 1.5
+	player.teleport(center + Vector3(0, 0, 26) * s, 0.0)
 	cam.yaw = 0.0
 	cam.pitch = -0.32
 	cam.arm.spring_length = 7.5
-	waypoints = [center + Vector3(0, 0, -24), center + Vector3(16, 0, -8), center + Vector3(-18, 0, 6),
-		center + Vector3(6, 0, 20)]
+	waypoints = [center + Vector3(0, 0, -24) * s, center + Vector3(16, 0, -8) * s, center + Vector3(-18, 0, 6) * s,
+		center + Vector3(6, 0, 20) * s]
+	if s > 1.0:
+		DURATION = 30.0
 
 	if live:
 		await _run_live()
@@ -112,9 +123,9 @@ func _run_live() -> void:
 		if recent.size() > 30:
 			recent.pop_front()
 		var avg: float = recent.reduce(func(a, x): return a + x, 0.0) / recent.size()
-		overlay.text = "%d FPS  (%.1f ms / frame) — live: rendering + simulation%s\n100 NPCs — full %d / kinematic %d / proxy %d — ragdolls %d\n%s, %s" % [
+		overlay.text = "%d FPS  (%.1f ms / frame) — live: rendering + simulation%s\n%s\n%s, %s" % [
 			roundi(1000.0 / avg), avg, "" if no_vsync else " (vsync on: capped at display refresh)",
-			c[0], c[1], c[2], c[3], OS.get_name(), RenderingServer.get_video_adapter_name()]
+			_tier_line(c), OS.get_name(), RenderingServer.get_video_adapter_name()]
 		overlay.modulate = Color(0.6, 1.0, 0.6) if avg <= 1000.0 / 60.0 else Color(1.0, 0.75, 0.5)
 	print("Live run on %s / %s / %s (%d threads):" % [OS.get_name(), OS.get_processor_name(),
 		RenderingServer.get_video_adapter_name(), OS.get_processor_count()])
@@ -122,14 +133,23 @@ func _run_live() -> void:
 
 
 func _spawn_crowd() -> void:
-	center = main.markers.open + Vector3(0, 0, -30)
+	# 100 NPCs fit in the open area; bigger crowds go further out, clear of the level geometry.
+	center = main.markers.open + (Vector3(0, 0, -30) if NPCS <= 100 else Vector3(20, 0, 20))
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 7
 	var side := int(ceil(sqrt(NPCS)))
+	if not characters:
+		layer = CrowdLayer.new()
+		layer.name = "Crowd"
+		main.add_child(layer)
 	for i in NPCS:
 		var gx := (i % side) - (side - 1) * 0.5
 		var gz := (i / side) - (side - 1) * 0.5
 		var pos := center + Vector3(gx * SPACING + rng.randf_range(-0.5, 0.5), 0, gz * SPACING + rng.randf_range(-0.5, 0.5))
+		if layer:
+			var h0 := rng.randf()
+			layer.add_agent(pos, rng.randf_range(0.0, TAU), Color.from_hsv(h0, 0.25, 0.75))
+			continue
 		var d: PlayerController = PLAYER_SCENE.instantiate()
 		d.name = "Npc%03d" % i
 		d.use_external_input = true
@@ -146,6 +166,9 @@ func _spawn_crowd() -> void:
 		brain.wander_radius = 2.0
 		d.add_child(brain)
 		npcs.append(d)
+	if layer:
+		layer.focus = player
+		layer.build()
 
 
 ## Scripted player: wait, then run through the crowd along a few waypoints.
@@ -163,8 +186,16 @@ func _drive(t: float) -> void:
 	player.external_input = {"move": Vector2(local.x, local.z), "run": true}
 
 
+## [full, kinematic, proxy-only or crowd-layer agents, ragdolls]
 func _counts() -> Array:
 	var c := [0, 0, 0, 0]
+	if layer:
+		for n: PlayerController in layer.active_characters():
+			c[n.rig.lod] += 1
+			if n.state == PlayerController.State.RAGDOLL:
+				c[3] += 1
+		c[2] = layer.count - layer.materialized_count()
+		return c
 	for n in npcs:
 		c[n.rig.lod] += 1
 		if n.state == PlayerController.State.RAGDOLL:
@@ -193,9 +224,15 @@ func _show(f: int) -> void:
 		ms += float(timeline[i][0])
 	ms /= float(f + 1 - a)
 	var c := _counts()  # live from this run; the timing comes from the measured run
-	overlay.text = "Simulation: %d FPS  (%.1f ms / frame)\n100 NPCs — full %d / kinematic %d / proxy %d — ragdolls %d\nCPU only, measured headless on a 4-core 2.1 GHz cloud VM (no GPU here)" % [
-		roundi(1000.0 / ms), ms, c[0], c[1], c[2], c[3]]
+	overlay.text = "Simulation: %d FPS  (%.1f ms / frame)\n%s\nCPU only, measured headless on a 4-core 2.1 GHz cloud VM (no GPU here)" % [
+		roundi(1000.0 / ms), ms, _tier_line(c)]
 	overlay.modulate = Color(0.6, 1.0, 0.6) if ms <= 1000.0 / 60.0 else Color(1.0, 0.75, 0.5)
+
+
+func _tier_line(c: Array) -> String:
+	if layer:
+		return "%d NPCs — real characters: full %d / kinematic %d — crowd layer %d — ragdolls %d" % [NPCS, c[0], c[1], c[2], c[3]]
+	return "%d NPCs — full %d / kinematic %d / proxy %d — ragdolls %d" % [NPCS, c[0], c[1], c[2], c[3]]
 
 
 func _report() -> void:
@@ -216,7 +253,8 @@ func _report() -> void:
 	for k in PlayerController.prof:
 		parts.append("%s %.2f" % [k, PlayerController.prof[k] / 1000.0 / timeline.size()])
 	print("CROWD ms/frame by section: controller total %.2f | %s" % [PlayerController.profile_usec / 1000.0 / timeline.size(), ", ".join(parts)])
-	print("CROWD tiers avg full %.1f / kinematic %.1f / proxy %.1f" % avg_tiers)
+	print("CROWD %d NPCs (%s) tiers avg full %.1f / kinematic %.1f / %s %.1f" % [NPCS,
+		"crowd layer" if layer else "all characters", avg_tiers[0], avg_tiers[1], "crowd" if layer else "proxy", avg_tiers[2]])
 	print("CROWD avg %.2f ms (%.0f FPS) | 99th pct %.2f ms (%.0f FPS) | worst %.2f ms | frames over 16.7 ms: %d of %d | max simultaneous ragdolls %d" % [
 		avg, 1000.0 / avg, p99, 1000.0 / p99, worst, over, ms.size(), max_rag])
 	if timeline_path != "":

@@ -55,13 +55,13 @@ All values are ms per physics tick. Cost scales linearly. There is no physics bl
 
 **Known limit:** hazards and thrown props don't knock over characters in the reduced tiers. Only melee strikes, being run into, `receive_hit` / `apply_hit` / `enter_ragdoll`, or entering the FULL budget promote them.
 
-## Crowd test: running through 100 NPCs
+## Crowd test: running through 100 NPCs (all real characters)
 
-`tests/crowd.gd` runs a scripted 22 s scenario. 100 wandering NPCs stand in a 26 m square, and the player sprints through them along four waypoints. Running into NPCs staggers them, or knocks them down at sprint speed.
+`tests/crowd.gd` runs a scripted 22 s scenario. 100 wandering NPCs stand in a 26 m square, and the player sprints through them along four waypoints. Running into NPCs staggers them, or knocks them down at sprint speed. This section is the `--characters` mode, where every NPC is a full `PlayerController` with character LOD. The default is now the crowd layer (next section).
 
 ```
 # measure: real CPU time per 60 fps frame (2 physics ticks + AI + animation + skinning), headless
-godot --headless --fixed-fps 60 --path . -s tests/crowd.gd -- --measure --timeline=crowd.json
+godot --headless --fixed-fps 60 --path . -s tests/crowd.gd -- --measure --characters --timeline=crowd.json
 # video of the same deterministic run, overlaying the measured simulation FPS
 godot --rendering-driver opengl3 --resolution 1280x720 --write-movie crowd.avi --fixed-fps 60 \
   --path . -s tests/crowd.gd -- --timeline=crowd.json
@@ -97,3 +97,34 @@ Remaining cost per frame:
 The next big win would be moving the pose generator, FK/IK and skinning to C++ (GDExtension).
 
 Rendering isn't included. A real GPU draws 100 low-poly skinned characters in well under a millisecond of CPU submit time, but that wasn't measurable here.
+
+## Crowd layer: 1000 and more NPCs
+
+With every NPC a real character, 1000 NPCs ran at 13 FPS. Each one still had 17 physics bodies (Jolt's default limit of 10,240 bodies ran out after about 600 NPCs) and per-character GDScript, FK and skinning. `scripts/crowd/crowd_layer.gd` adds a separate crowd tier underneath the character LOD:
+
+- **NPCs are plain data.** Position, velocity, heading and wander state live in packed arrays and are updated by one node: wander, turn back home, personal space via a uniform grid. Agents beyond 40 m update every third frame.
+- **Baked animation instead of skinning.** At startup, `scripts/crowd/crowd_vat.gd` samples the real character's stroll and idle cycles (the same PoseGenerator → FK → skin path) into vertex animation textures. 1226 vertices × 40 frames take about 50 ms. `shaders/crowd_vat.gdshader` plays them back per instance.
+- **Chunked MultiMeshes.** NPCs are drawn with one MultiMesh per 16 m × 16 m chunk, so off-screen chunks are culled. The mesh has generated LODs (1968 → 41 triangles) for distant chunks. Zero CPU skinning, and one draw call per visible chunk.
+- **The nearest 24 NPCs become real characters, borrowed from a pool.** Every 0.1 s, the agents nearest the player (and where the player is heading) become pooled `PlayerController`s with active ragdoll, shoves, combat and knockdowns. The existing LOD budget then makes 5 of them FULL and the rest KINEMATIC. When an agent drops out of that set and its character is calm again (on its feet, not hit recently), the character is parked: disabled, so out of the physics server. The agent continues as data from where the character stopped.
+
+```
+godot --headless --fixed-fps 60 --path . -s tests/crowd.gd -- --measure --npcs=1000
+tools/crowd_mac.sh live --npcs=1000      # real time with rendering, on a Mac
+```
+
+**Results** on the 4-core 2.1 GHz cloud VM, simulation only (2 physics ticks + AI + animation per 60 fps frame, no rendering):
+
+| NPCs | Average | 99th percentile | Crowd layer update | Real characters (avg) |
+|---|---|---|---|---|
+| 100 | 6.3 ms (159 FPS) | 10.9 ms (91 FPS) | 0.24 ms | 4.4 full, 14.6 kinematic |
+| 1000 | 8.4 ms (119 FPS) | 13.1 ms (76 FPS) | 1.6 ms | 4.8 full, 19.1 kinematic |
+| 10,000 | 16.5 ms (61 FPS) | 27.5 ms (36 FPS) | 9.6 ms | 4.8 full, 19.1 kinematic |
+
+About 3.5 ms of every frame is the 24 real characters, about the same at any crowd size. The crowd layer costs about 1 µs per NPC per frame in GDScript. At 10,000 NPCs, that loop is the next thing to move to C++ (GDExtension) or a compute shader.
+
+**Rendering:** 1000 NPCs × 1226 vertices is about 1.2 M vertices for the visible chunks. That's trivial for any GPU, but slow on this VM's software renderer (about 0.7 s per frame for the recorded video).
+
+**Limits:**
+- Crowd agents walk on the plane of their home point. They don't query the ground or collide with level geometry, so crowds belong on open ground.
+- Hazards and thrown props only affect the real characters near the player.
+- Handing an agent to a character snaps from the baked stroll to the procedural pose; at that distance the switch is subtle.
