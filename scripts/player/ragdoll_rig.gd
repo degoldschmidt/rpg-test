@@ -28,6 +28,11 @@ var _weak: Dictionary = {}      ## StringName -> 0..1 (1 = full strength)
 var _prev_target: Dictionary = {}
 var _hit_accum := 0.0
 var _has_prev := false
+
+## Level of detail (see CharacterLOD). FULL simulates, KINEMATIC snaps frozen bodies to the
+## animated targets, PROXY_ONLY also removes them from collision.
+var lod: int = CharacterLOD.Tier.FULL
+var pose_version := 0            ## bumped every step; the skin skips frames when unchanged
 var _def: Dictionary = {}       ## StringName -> BoneDef
 var _ik_delta := {&"l": 0.0, &"r": 0.0}
 var _ik_normal := {&"l": Vector3.UP, &"r": Vector3.UP}
@@ -149,6 +154,21 @@ func _add_face(head: Node3D, r: float) -> void:
 
 ## Called every physics tick by the controller.
 func step(dt: float, root: Transform3D, root_velocity: Vector3, pose: Dictionary) -> void:
+	pose_version += 1
+	if lod != CharacterLOD.Tier.FULL:
+		# No physics: place the frozen bodies exactly on the animation (no IK raycasts).
+		var flat := pose.duplicate()
+		flat["foot_ik"] = 0.0
+		flat["hand_ik"] = 0.0
+		var kt := compute_targets(root, flat, dt)
+		var move_bodies := lod == CharacterLOD.Tier.KINEMATIC  # proxy-only: the skin reads targets
+		for d in defs:
+			var b: PuppetBone = bones[d.name]
+			b.target = kt[d.name]
+			if move_bodies:
+				b.global_transform = kt[d.name]
+		_prev_target = kt
+		return
 	var targets := compute_targets(root, pose, dt)
 	for d in defs:
 		var b: PuppetBone = bones[d.name]
@@ -329,6 +349,11 @@ func weaken(bone_name: StringName, amount: float) -> void:
 		_weak[bone_name] = clampf(amount, 0.0, 1.0)
 
 
+## Where a bone is shown: its body, or its animation target while proxy-only (bodies parked).
+func display_transform(b: PuppetBone) -> Transform3D:
+	return b.target if lod == CharacterLOD.Tier.PROXY_ONLY else b.global_transform
+
+
 func pelvis() -> PuppetBone:
 	return bones[&"pelvis"]
 
@@ -340,6 +365,35 @@ func add_velocity(dv: Vector3, point: Vector3, falloff := 1.5) -> void:
 
 
 ## Snap the whole puppet to its rest pose at `root` with zero velocity.
+## Switch simulation tier. Promotion to FULL hands the bodies back to physics moving with
+## `velocity`, so the drive picks up smoothly from the current pose.
+func set_lod(tier: int, velocity := Vector3.ZERO) -> void:
+	if tier == lod:
+		return
+	lod = tier
+	for b: PuppetBone in bones.values():
+		if tier != CharacterLOD.Tier.PROXY_ONLY:
+			b.global_transform = b.target  # bodies were left behind while proxy-only
+		match tier:
+			CharacterLOD.Tier.FULL:
+				b.collision_layer = InputSetup.LAYER_PUPPET
+				b.collision_mask = InputSetup.LAYER_WORLD | InputSetup.LAYER_PROPS | InputSetup.LAYER_HAZARDS | InputSetup.LAYER_DETAIL
+				b.freeze = false
+				b.linear_velocity = velocity
+				b.angular_velocity = Vector3.ZERO
+			CharacterLOD.Tier.KINEMATIC:
+				b.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+				b.freeze = true
+				b.collision_layer = InputSetup.LAYER_PUPPET
+				b.collision_mask = 0
+			CharacterLOD.Tier.PROXY_ONLY:
+				b.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+				b.freeze = true
+				b.collision_layer = 0
+				b.collision_mask = 0
+	_has_prev = false
+
+
 func teleport(root: Transform3D) -> void:
 	for d in defs:
 		var b: PuppetBone = bones[d.name]

@@ -13,11 +13,86 @@ var _passes := 0
 var _seen: Array = []
 
 
+## [test function, group, part of the quick suite?]  Order within a group is kept.
+const TESTS := [
+	["test_idle_stability", "core", true],
+	["test_skin_follows_puppet", "core", true],
+	["test_lod_tiers", "core", true],
+	["test_lod_promotes_on_hit", "core", false],
+	["test_lod_ragdoll_stays_full", "core", false],
+	["test_lift_carry_throw", "objects", true],
+	["test_lift_and_drop", "objects", false],
+	["test_push_and_pull_crate", "objects", true],
+	["test_heavy_block_is_slower", "objects", false],
+	["test_too_heavy", "objects", false],
+	["test_punch_flinch", "combat", true],
+	["test_punch_combo_stagger", "combat", false],
+	["test_kick_stagger", "combat", true],
+	["test_kick_staggered_knockdown", "combat", false],
+	["test_running_kick_knockdown", "combat", false],
+	["test_guard_blocks_punch", "combat", true],
+	["test_guard_from_behind", "combat", false],
+	["test_kick_breaks_guard", "combat", false],
+	["test_air_hit_knockdown", "combat", false],
+	["test_sparring_hits_player", "combat", false],
+	["test_punch_prop", "combat", false],
+	["test_no_attack_while_carrying", "objects", false],
+	["test_walk_momentum", "movement", true],
+	["test_run_momentum", "movement", false],
+	["test_skid", "movement", false],
+	["test_jump_heights", "movement", true],
+	["test_crouch_and_tunnel", "movement", true],
+	["test_foot_ik_slope", "terrain", true],
+	["test_foot_ik_stairs", "terrain", false],
+	["test_climb_stairs", "terrain", false],
+	["test_ground_mantle", "terrain", true],
+	["test_running_mantle", "terrain", false],
+	["test_air_mantle_platform", "terrain", false],
+	["test_grab_hang_shimmy_climb", "terrain", true],
+	["test_hang_drop", "terrain", false],
+	["test_no_grab_out_of_reach", "terrain", false],
+	["test_slide", "movement", false],
+	["test_roll", "movement", true],
+	["test_stumble_landing", "movement", false],
+	["test_hard_fall_ragdoll_and_get_up", "movement", true],
+	["test_roll_landing_saves", "movement", false],
+	["test_swinging_log_knockdown", "movement", false],
+	["test_bumper_launch", "movement", false],
+	["test_smoke_random_input", "movement", false],
+]
+
+## Shortened waits in the quick suite.
+var quick := false
+
+
 func _initialize() -> void:
 	_run()
 
 
+## User args (after `--`): --suite=quick|full  --group=a,b  --only=test_a,test_b  --list
+func _selected() -> Array:
+	var groups: Array = []
+	var only: Array = []
+	for a in OS.get_cmdline_user_args():
+		if a == "--suite=quick":
+			quick = true
+		elif a.begins_with("--group="):
+			groups = Array(a.trim_prefix("--group=").split(","))
+		elif a.begins_with("--only="):
+			only = Array(a.trim_prefix("--only=").split(","))
+	return TESTS.filter(func(t):
+		if not only.is_empty():
+			return t[0] in only
+		return (groups.is_empty() or t[1] in groups) and (not quick or t[2]))
+
+
 func _run() -> void:
+	if "--list" in OS.get_cmdline_user_args():
+		for t in TESTS:
+			print("%s %s%s" % [t[1], t[0], " (quick)" if t[2] else ""])
+		quit()
+		return
+	var selected := _selected()
 	main = (load("res://scenes/main.tscn") as PackedScene).instantiate()
 	root.add_child(main)
 	await physics_frame
@@ -26,49 +101,13 @@ func _run() -> void:
 	player.use_external_input = true
 	player.state_changed.connect(func(_o, n): _seen.append(n))
 
-	await test_idle_stability()
-	await test_skin_follows_puppet()
-	await test_lift_carry_throw()
-	await test_lift_and_drop()
-	await test_push_and_pull_crate()
-	await test_heavy_block_is_slower()
-	await test_too_heavy()
-	await test_punch_flinch()
-	await test_punch_combo_stagger()
-	await test_kick_stagger()
-	await test_kick_staggered_knockdown()
-	await test_running_kick_knockdown()
-	await test_guard_blocks_punch()
-	await test_guard_from_behind()
-	await test_kick_breaks_guard()
-	await test_air_hit_knockdown()
-	await test_sparring_hits_player()
-	await test_punch_prop()
-	await test_no_attack_while_carrying()
-	await test_walk_momentum()
-	await test_run_momentum()
-	await test_skid()
-	await test_jump_heights()
-	await test_crouch_and_tunnel()
-	await test_foot_ik_slope()
-	await test_foot_ik_stairs()
-	await test_climb_stairs()
-	await test_ground_mantle()
-	await test_running_mantle()
-	await test_air_mantle_platform()
-	await test_grab_hang_shimmy_climb()
-	await test_hang_drop()
-	await test_no_grab_out_of_reach()
-	await test_slide()
-	await test_roll()
-	await test_stumble_landing()
-	await test_hard_fall_ragdoll_and_get_up()
-	await test_roll_landing_saves()
-	await test_swinging_log_knockdown()
-	await test_bumper_launch()
-	await test_smoke_random_input()
+	var t_all := Time.get_ticks_msec()
+	for t in selected:
+		var t0 := Time.get_ticks_msec()
+		await call(t[0])
+		print("  [%s: %.1f s]" % [t[0], (Time.get_ticks_msec() - t0) / 1000.0])
 
-	print("\n==== %d passed, %d failed ====" % [_passes, _fails.size()])
+	print("\n==== %d passed, %d failed ==== (%d tests, %.0f s)" % [_passes, _fails.size(), selected.size(), (Time.get_ticks_msec() - t_all) / 1000.0])
 	for f in _fails:
 		print("  FAIL: " + f)
 	quit(1 if _fails.size() > 0 else 0)
@@ -159,13 +198,13 @@ func test_idle_stability() -> void:
 	var lo := 99.0
 	var hi := -99.0
 	var head_lo := 99.0
-	for i in int(10.0 / TICK):
+	for i in int((3.0 if quick else 10.0) / TICK):
 		await physics_frame
 		var y := player.rig.pelvis().global_position.y - player.global_position.y
 		lo = minf(lo, y)
 		hi = maxf(hi, y)
 		head_lo = minf(head_lo, player.rig.bones[&"head"].global_position.y - player.global_position.y)
-	check("pelvis steady over 10 s", hi - lo < 0.06, "(range %.3f m)" % (hi - lo))
+	check("pelvis steady while idle", hi - lo < 0.06, "(range %.3f m)" % (hi - lo))
 	check("pelvis at standing height", absf(lo - 1.0) < 0.12, "(%.2f m)" % lo)
 	check("head stays up", head_lo > 1.5, "(%.2f m)" % head_lo)
 	check("no NaN / explosion", not player.rig.has_invalid_state())
@@ -404,6 +443,72 @@ func max_bone_deviation(c: PlayerController) -> float:
 	return worst
 
 
+# ------------------------------------------------------------------ LOD tests
+
+func lod_name(c: PlayerController) -> String:
+	return CharacterLOD.Tier.keys()[c.rig.lod]
+
+
+func bodies_frozen(c: PlayerController) -> bool:
+	return c.rig.bones.values().all(func(b): return b.freeze)
+
+
+func test_lod_tiers() -> void:
+	print("LOD tiers by distance")
+	var d: PlayerController = main.dummies.passive
+	d.reset()
+	var p := d.global_position
+	await place(p + Vector3(0, 0, 80), 0.6)
+	check("far dummy is PROXY_ONLY", d.rig.lod == CharacterLOD.Tier.PROXY_ONLY, "(%s)" % lod_name(d))
+	check("its puppet is frozen and out of collision", bodies_frozen(d) and d.rig.pelvis().collision_layer == 0)
+	check("the player is always FULL", player.rig.lod == CharacterLOD.Tier.FULL)
+	await place(p + Vector3(0, 0, 40), 0.6)
+	check("mid-range dummy is KINEMATIC", d.rig.lod == CharacterLOD.Tier.KINEMATIC, "(%s)" % lod_name(d))
+	check("kinematic puppet is frozen but still hittable", bodies_frozen(d) and d.rig.pelvis().collision_layer == InputSetup.LAYER_PUPPET)
+	d.skin.update_pose()
+	var hips := d.skin.bone_world_position("spine").distance_to(d.rig.pelvis().global_position)
+	check("skin still follows a reduced-tier puppet", hips < 0.2, "(%.2f m)" % hips)
+	await place(p + Vector3(0, 0, 3), 0.6)
+	check("nearby dummy is FULL again", d.rig.lod == CharacterLOD.Tier.FULL and not bodies_frozen(d), "(%s)" % lod_name(d))
+	await seconds(1.0)
+	var err := d.rig.pelvis().global_position.distance_to(d.global_position + Vector3.UP)
+	check("promoted dummy stands normally", err < 0.15 and d.state == PlayerController.State.IDLE, "(pelvis err %.2f m)" % err)
+
+
+func test_lod_promotes_on_hit() -> void:
+	print("LOD promotes on hit")
+	watch_reactions()
+	var d: PlayerController = main.dummies.passive
+	d.reset()
+	await place(d.global_position + Vector3(0, 0, 40), 0.6)
+	check("starts KINEMATIC", d.rig.lod == CharacterLOD.Tier.KINEMATIC, "(%s)" % lod_name(d))
+	_reactions.clear()
+	d.receive_hit({"dir": Vector3.FORWARD, "strength": 1.0, "point": d.rig.bones[&"head"].global_position,
+		"bone": &"head", "attacker": player, "up": 0.1})
+	check("a hit promotes it to FULL immediately", d.rig.lod == CharacterLOD.Tier.FULL)
+	check("and it still reacts (FLINCH)", reactions_of("passive") == [&"flinch"], "(%s)" % [reactions_of("passive")])
+	await seconds(cfg.lod_promote_hold + 0.6)
+	check("drops back to its distance tier afterwards", d.rig.lod == CharacterLOD.Tier.KINEMATIC, "(%s)" % lod_name(d))
+
+
+func test_lod_ragdoll_stays_full() -> void:
+	print("LOD keeps ragdolls FULL")
+	var d: PlayerController = main.dummies.passive
+	d.reset()
+	await place(d.global_position + Vector3(0, 0, 3), 0.6)
+	d.enter_ragdoll(Vector3(0, 2, 3), d.rig.pelvis().global_position)
+	await place(d.global_position + Vector3(0, 0, 80), 0.0)
+	var stayed := true
+	while d.state in [PlayerController.State.RAGDOLL, PlayerController.State.GET_UP]:
+		stayed = stayed and d.rig.lod == CharacterLOD.Tier.FULL
+		await physics_frame
+	check("ragdoll + get-up stay FULL even when far away", stayed)
+	check("it got back up", d.state == PlayerController.State.IDLE)
+	await seconds(cfg.lod_promote_hold + 0.6)
+	check("then drops to PROXY_ONLY", d.rig.lod == CharacterLOD.Tier.PROXY_ONLY, "(%s)" % lod_name(d))
+	d.reset()
+
+
 # ------------------------------------------------------------------ combat tests
 
 func test_punch_flinch() -> void:
@@ -564,11 +669,21 @@ func test_sparring_hits_player() -> void:
 	await place(main.markers.spawn)
 
 
+## Stop the bag dead at its rest pose so each strike starts from the same state.
+func still_bag(bag: RigidBody3D, rest: Transform3D) -> void:
+	bag.global_transform = rest
+	bag.linear_velocity = Vector3.ZERO
+	bag.angular_velocity = Vector3.ZERO
+	await seconds(0.2)
+
+
 func test_punch_prop() -> void:
 	print("punching bag")
 	var bag: RigidBody3D = main.props.bag
-	var p := bag.global_position
+	var rest := bag.global_transform
+	var p := rest.origin
 	await place(Vector3(p.x, 0, p.z + 0.85), 0.6)
+	await still_bag(bag, rest)
 	var b0 := bag.global_position
 	await strike("punch")
 	var swing := 0.0
@@ -578,8 +693,8 @@ func test_punch_prop() -> void:
 		swing = maxf(swing, Vector2(bag.global_position.x - b0.x, bag.global_position.z - b0.z).length())
 		v_punch = maxf(v_punch, bag.linear_velocity.length())
 	check("punch swings the bag", swing > 0.1, "(%.2f m)" % swing)
-	await seconds(4.0)  # let it settle
 	await place(Vector3(p.x, 0, p.z + 0.85), 0.6)
+	await still_bag(bag, rest)
 	await strike("kick")
 	var v_kick := 0.0
 	for i in int(1.0 / TICK):

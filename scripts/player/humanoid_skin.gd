@@ -38,9 +38,13 @@ var _pinned: Dictionary = {}     ## bone idx -> pivot offset in the body frame
 var _root_offset := Vector3.ZERO ## hips position in the pelvis body frame
 var _root_bone := -1
 var _world: Array[Transform3D] = []
+var _rig: RagdollRig
+var _seen_version := -1
+var _material: StandardMaterial3D
 
 
 func setup(rig: RagdollRig) -> void:
+	_rig = rig
 	model = model_scene.instantiate()
 	add_child(model)
 	skeleton = model.find_children("*", "Skeleton3D", true, false)[0]
@@ -51,6 +55,7 @@ func setup(rig: RagdollRig) -> void:
 		mat.albedo_color = skin_color
 		mat.roughness = 0.6
 		mi.material_override = mat
+		_material = mat
 		mi.extra_cull_margin = 2.0
 	_scale = height / mesh_aabb.size.y
 
@@ -99,13 +104,23 @@ func setup(rig: RagdollRig) -> void:
 func _process(_dt: float) -> void:
 	if skeleton == null:
 		return
+	# Physics bodies move every tick in FULL; reduced tiers only when the rig stepped.
+	if _rig.lod != CharacterLOD.Tier.FULL and _rig.pose_version == _seen_version:
+		return
+	_seen_version = _rig.pose_version
 	update_pose()
+
+
+## Debug tint (F3 shows LOD tiers); Color.WHITE clears it.
+func set_tint(c: Color) -> void:
+	if _material:
+		_material.albedo_color = skin_color * c
 
 
 ## Rebuilds every bone from the current puppet body transforms.
 func update_pose() -> void:
 	var pelvis: PuppetBone = _body[_root_bone]
-	var xs := Transform3D((MODEL_TO_RIG * Basis.from_scale(Vector3.ONE * _scale)), pelvis.global_position)
+	var xs := Transform3D((MODEL_TO_RIG * Basis.from_scale(Vector3.ONE * _scale)), _rig.display_transform(pelvis).origin)
 	skeleton.global_transform = xs
 	var xs_inv := xs.affine_inverse()
 	var rot_inv := MODEL_TO_RIG.inverse()
@@ -114,12 +129,13 @@ func update_pose() -> void:
 		var w := Transform3D()
 		if _body.has(b):
 			var body: PuppetBone = _body[b]
-			var bb := body.global_basis.orthonormalized()
+			var bt := _rig.display_transform(body)
+			var bb := bt.basis.orthonormalized()
 			w.basis = bb * (_aligned[b] as Basis)
 			if p < 0:
-				w.origin = body.global_position + bb * _root_offset
+				w.origin = bt.origin + bb * _root_offset
 			elif _pinned.has(b):
-				w.origin = body.global_transform * (_pinned[b] as Vector3)
+				w.origin = bt * (_pinned[b] as Vector3)
 			else:
 				w.origin = _world[p].origin + _world[p].basis * (_rest_local[b].origin * _scale)
 		elif p >= 0:

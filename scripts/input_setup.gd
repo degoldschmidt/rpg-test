@@ -23,6 +23,7 @@ static func ensure_actions() -> void:
 	_key("reset_player", [KEY_R])
 	_key("toggle_help", [KEY_F1])
 	_key("toggle_debug_bodies", [KEY_F2])
+	_key("toggle_lod_tint", [KEY_F3])
 	_key("interact", [KEY_E])
 	_key("throw", [KEY_F])
 	_key("punch", [KEY_J])
