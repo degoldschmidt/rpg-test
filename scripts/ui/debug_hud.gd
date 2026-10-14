@@ -8,6 +8,7 @@ const HELP := """WASD / left stick  move     Shift / L3  run
 Space / A  jump (hold for height)     Ctrl,C / B  crouch (while running: slide)
 Q / X  forward roll (press just before landing to roll out of big falls)
 Jump at a chest-high ledge: mantle | jump at a higher one: grab. Hanging: A/D shimmy, jump/W climb, crouch/S drop
+LMB,J / Y  punch     K,V / RT  kick     hold RMB,L / LT  guard
 E / RB  lift, drop, grab to push/pull     F / LB  throw
 G / Y  toggle ragdoll     R / Back  reset     F2  physics bodies     Mouse / right stick  camera
 Click to capture mouse, Esc to release, F1 hide help"""
@@ -15,6 +16,8 @@ Click to capture mouse, Esc to release, F1 hide help"""
 var _label: Label
 var _help: Label
 var _hint: Label
+var _event: Label
+var _event_t := 99.0
 
 
 func _ready() -> void:
@@ -28,7 +31,7 @@ func _ready() -> void:
 	_help.anchor_top = 1.0
 	_help.anchor_bottom = 1.0
 	_help.offset_left = 16
-	_help.offset_top = -154
+	_help.offset_top = -176
 	_help.text = HELP
 	_help.add_theme_font_size_override("font_size", 15)
 	_help.add_theme_color_override("font_outline_color", Color.BLACK)
@@ -45,6 +48,24 @@ func _ready() -> void:
 	_hint.add_theme_color_override("font_outline_color", Color.BLACK)
 	_hint.add_theme_constant_override("outline_size", 6)
 	add_child(_hint)
+	_event = Label.new()
+	_event.anchor_left = 0.5
+	_event.anchor_right = 0.5
+	_event.offset_left = -300
+	_event.offset_right = 300
+	_event.offset_top = 40
+	_event.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_event.add_theme_font_size_override("font_size", 26)
+	_event.add_theme_color_override("font_outline_color", Color.BLACK)
+	_event.add_theme_constant_override("outline_size", 7)
+	add_child(_event)
+
+
+## Show a fading line whenever this character reacts to a hit.
+func watch(character: PlayerController, label: String) -> void:
+	character.combat.reacted.connect(func(kind: StringName, s: float):
+		_event.text = "%s: %s  (%.1f)" % [label, String(kind).to_upper().replace("_", " "), s]
+		_event_t = 0.0)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -56,8 +77,10 @@ func _process(_dt: float) -> void:
 	if not player:
 		return
 	_hint.text = player.interact_hint()
-	_label.text = "State: %s\nSpeed: %.1f m/s   Vy: %.1f\nMuscle: %.2f\nLast landing: %.1f m/s   Last hit: %.0f\nFPS: %d" % [
-		PlayerController.State.keys()[player.state],
+	_event_t += _dt
+	_event.modulate.a = clampf(1.5 - _event_t, 0.0, 1.0)
+	_label.text = "State: %s%s\nSpeed: %.1f m/s   Vy: %.1f\nMuscle: %.2f\nLast landing: %.1f m/s   Last hit: %.0f\nFPS: %d" % [
+		PlayerController.State.keys()[player.state], "  (guard)" if player.combat.guarding else "",
 		player.horizontal_speed(), player.velocity.y,
 		player.rig.muscle, player.last_impact, player.last_hit,
 		Engine.get_frames_per_second(),

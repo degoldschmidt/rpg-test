@@ -72,6 +72,21 @@ extends Resource
 @export var grab_gap := 0.5              ## capsule center to grabbed face
 @export var grab_break_distance := 0.45
 
+@export_group("Combat")
+@export var stagger_strength := 1.8      ## hit strength (punch 1.0, kick 2.2) that staggers
+@export var knockdown_strength := 3.0    ## ... that knocks down (running kick, or hit while staggered)
+@export var guard_break_strength := 2.0  ## guard holds below this
+@export var guard_break_time := 0.8
+@export var guard_speed_factor := 0.4
+@export var block_pushback := 1.2
+@export var combo_window := 0.6          ## third light hit inside this window staggers
+@export var stagger_time := 0.6
+@export var stagger_speed := 3.0
+@export var stagger_friction := 5.0
+@export var flinch_speed := 4.0          ## velocity given to the struck limb per strength unit
+@export var knockdown_speed := 5.0
+@export var lock_on_range := 3.0
+
 @export_group("Landing & ragdoll")
 @export var stumble_land_speed := 14.0
 @export var ragdoll_land_speed := 19.0

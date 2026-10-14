@@ -50,7 +50,7 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	e[&"chest"].x = 0.02 * sin(time * 2.2)
 
 	match mode:
-		&"ground", &"crouch", &"stumble":
+		&"ground", &"crouch", &"stumble", &"stagger":
 			var cr: float = c.get("crouch", 0.0) + c.get("land_squash", 0.0) * 0.7
 			if mode == &"stumble":
 				cr = maxf(cr, 0.55)
@@ -172,6 +172,83 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 		_:
 			pass  # ragdoll: targets unused
 
+	# --- combat overlays
+	var atk: Dictionary = c.get("attack", {})
+	if mode == &"stagger":
+		# Knocked back: arms thrown out, torso and head whipped back.
+		var fl := sin(time * 15.0) * 0.4
+		_lerp_bone(e, &"upper_arm_l", Vector3(0.7 + fl, 0, -1.0), 0.9)
+		_lerp_bone(e, &"upper_arm_r", Vector3(0.7 - fl, 0, 1.0), 0.9)
+		e[&"spine"].x += 0.35
+		e[&"chest"].x += 0.15
+		e[&"head"].x += 0.45
+	if c.get("guard", false):
+		for s in ["l", "r"]:
+			var side := -1.0 if s == "l" else 1.0
+			_lerp_bone(e, StringName("upper_arm_" + s), Vector3(1.25, 0, -0.45 * side), 1.0)
+			_lerp_bone(e, StringName("forearm_" + s), Vector3(2.2, 0, 0), 1.0)
+			e[StringName("thigh_" + s)].x += 0.2
+			e[StringName("shin_" + s)].x -= 0.3
+		e[&"spine"].x -= 0.12
+		e[&"head"].x -= 0.1
+		off.y -= 0.04
+	if not atk.is_empty():
+		var t: float = atk.t
+		var wu: float = atk.windup
+		var act: float = atk.active
+		var total: float = atk.total
+		var w_wind := smoothstep(0.0, wu * 0.8, t) * (1.0 - smoothstep(wu - 0.02, wu + 0.03, t))
+		var w_hit := smoothstep(wu - 0.03, wu + 0.03, t) * (1.0 - smoothstep(wu + act, total, t))
+		rate = 30.0
+		if atk.kind == &"punch":
+			# Right cross: chamber the fist with the chest turned away, then snap it out.
+			_lerp_bone(e, &"upper_arm_r", Vector3(0.5, 0, 0.35), w_wind)
+			_lerp_bone(e, &"forearm_r", Vector3(2.1, 0, 0), w_wind)
+			_lerp_bone(e, &"upper_arm_r", Vector3(1.55, 0, -0.1), w_hit)
+			_lerp_bone(e, &"forearm_r", Vector3(0.05, 0, 0), w_hit)
+			var g := maxf(w_wind, w_hit)
+			_lerp_bone(e, &"upper_arm_l", Vector3(1.15, 0, 0.35), g)
+			_lerp_bone(e, &"forearm_l", Vector3(2.0, 0, 0), g)
+			e[&"chest"].y += -0.3 * w_wind + 0.35 * w_hit
+			e[&"spine"].y += -0.1 * w_wind + 0.15 * w_hit
+			e[&"spine"].x -= 0.15 * w_hit
+		else:
+			# Front kick: chamber the knee leaning back, then extend through the target.
+			_lerp_bone(e, &"thigh_r", Vector3(1.6, 0, 0), w_wind)
+			_lerp_bone(e, &"shin_r", Vector3(-1.8, 0, 0), w_wind)
+			_lerp_bone(e, &"thigh_r", Vector3(1.45, 0, 0), w_hit)
+			_lerp_bone(e, &"shin_r", Vector3(-0.1, 0, 0), w_hit)
+			var g := maxf(w_wind, w_hit)
+			e[&"shin_l"].x -= 0.2 * g
+			e[&"spine"].x += 0.15 * w_wind + 0.35 * w_hit
+			root_e.x += 0.1 * w_hit
+			_lerp_bone(e, &"upper_arm_l", Vector3(0.6, 0, -0.6), g)
+			_lerp_bone(e, &"upper_arm_r", Vector3(0.3, 0, 0.5), g)
+	var fl_d: Dictionary = c.get("flinch", {})
+	if not fl_d.is_empty():
+		var k := 1.0 - smoothstep(0.0, 0.35, fl_d.t)
+		var side: float = fl_d.side
+		match fl_d.region:
+			&"head":
+				e[&"head"].x += 0.7 * k
+				e[&"chest"].x += 0.2 * k
+				e[&"head"].y += 0.3 * k * side
+			&"torso":
+				e[&"spine"].x += 0.35 * k
+				e[&"chest"].x += 0.2 * k
+				e[&"chest"].y += 0.4 * k * side
+			&"arm_l":
+				e[&"upper_arm_l"] += Vector3(-0.4, 0, -0.8) * k
+			&"arm_r":
+				e[&"upper_arm_r"] += Vector3(-0.4, 0, 0.8) * k
+			&"leg":
+				e[&"spine"].x -= 0.25 * k
+				e[&"thigh_l"].x -= 0.3 * k
+			&"guard":
+				e[&"upper_arm_l"].x -= 0.35 * k
+				e[&"upper_arm_r"].x -= 0.35 * k
+				e[&"spine"].x += 0.15 * k
+
 	# Arm overlays for carrying / pushing (hand IK then places the palms exactly).
 	var arm_mode: StringName = c.get("arm_mode", &"")
 	if arm_mode == &"carry":
@@ -201,8 +278,8 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	# Foot IK on whenever the feet are meant to be on the ground.
 	var ik_target := 0.0
 	match mode:
-		&"ground", &"crouch", &"stumble", &"get_up":
-			ik_target = 1.0
+		&"ground", &"crouch", &"stumble", &"get_up", &"stagger":
+			ik_target = 0.0 if atk.get("kind", &"") == &"kick" else 1.0
 		&"slide":
 			ik_target = 0.6
 	_ik_w = lerpf(_ik_w, ik_target, 1.0 - exp(-10.0 * dt))
@@ -217,6 +294,11 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 		_root_off = _root_off.lerp(off, k)
 	return {"bones": _cur, "root_rot": _root_rot, "root_offset": _root_off, "foot_ik": _ik_w,
 		"hand_ik": _hand_w if not hand_targets.is_empty() else 0.0, "hand_targets": hand_targets}
+
+
+func _lerp_bone(e: Dictionary, bone: StringName, target: Vector3, w: float) -> void:
+	if w > 0.0:
+		e[bone] = (e[bone] as Vector3).lerp(target, clampf(w, 0.0, 1.0))
 
 
 ## Key poses are {bone: euler offset, &"_off": root offset, &"_root": root euler}.
