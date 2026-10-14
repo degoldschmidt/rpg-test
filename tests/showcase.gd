@@ -2,7 +2,7 @@ extends SceneTree
 ## Scripted showcase clips for watching the prototype without playing it. Record one with:
 ##   xvfb-run godot --rendering-driver opengl3 --resolution 1280x720 --write-movie out.avi \
 ##     --fixed-fps 30 --path . -s tests/showcase.gd -- --clip=combat
-## Clips: movement, falls, terrain, ledges, objects, combat, hazards
+## Clips: movement, gait, falls, terrain, ledges, objects, combat, hazards
 
 var main: Node3D
 var player: PlayerController
@@ -119,6 +119,33 @@ func clip_movement() -> void:
 	await secs(1.8)
 	idle()
 	await secs(1.0)
+
+
+## Side view on the legs: stroll, walk, run, stop, turns.
+func clip_gait() -> void:
+	var o: Vector3 = main.markers.open + Vector3(0, 0, 30)
+	await spot(o, 0.0, PI * 0.5, -0.12, 3.6)
+	var plan := [
+		["Stroll (half stick): heel strike, planted feet, toe-off", Vector3.FORWARD * 0.45, false, 3.5],
+		["Walk (full stick): jog with a flight phase", Vector3.FORWARD, false, 3.0],
+		["Run (Shift)", Vector3.FORWARD, true, 3.0],
+		["Stop: feet settle under the hips", Vector3.ZERO, false, 2.5],
+		["Walk off and turn around", Vector3.FORWARD * 0.6, false, 1.5],
+		["", Vector3.BACK * 0.6, false, 2.5],
+		["Run, hard turn", Vector3.BACK, true, 1.5],
+		["", Vector3.RIGHT, true, 2.0],
+		["", Vector3.ZERO, false, 2.0],
+	]
+	for step in plan:
+		if step[0] != "":
+			say(step[0])
+		for i in int(step[3] * 120.0):
+			if step[1] == Vector3.ZERO:
+				idle()
+			else:
+				go(step[1], {"run": step[2]})
+			cam.yaw = lerp_angle(cam.yaw, player.facing_yaw + PI * 0.5, 0.05)
+			await physics_frame
 
 
 func clip_falls() -> void:

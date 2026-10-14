@@ -12,7 +12,6 @@ extends RefCounted
 const WALK_FRAMES := 24
 const IDLE_FRAMES := 16
 const STROLL_INPUT := 0.45   ## same stick amount the wandering NPC brains use
-const STRIDE := 0.7          ## PoseGenerator walk stride (run_k = 0)
 
 static var _cache: Dictionary = {}
 
@@ -52,29 +51,43 @@ static func _bake(tree: SceneTree) -> Dictionary:
 
 	var cfg := c.config
 	var speed := cfg.walk_speed * STROLL_INPUT
-	var walk_cycle_t := 2.0 * STRIDE / speed
 	var idle_period := TAU / 2.2   # PoseGenerator idle breathing
 	var data := PackedFloat32Array()
 	var ndata := PackedFloat32Array()
 	data.resize(nv * 3 * (WALK_FRAMES + IDLE_FRAMES))
 	ndata.resize(data.size())
-	var root := c.root_transform()
-	var to_root := root.affine_inverse()
+	var start := c.root_transform()
 
-	var cycles := [
-		[{"mode": &"ground", "speed": speed, "run_k": 0.0, "move": STROLL_INPUT}, walk_cycle_t, WALK_FRAMES, 0],
-		[{"mode": &"ground", "speed": 0.0, "run_k": 0.0, "move": 0.0}, idle_period, IDLE_FRAMES, WALK_FRAMES],
-	]
+	# The stroll is sampled while actually walking forward (feet plant in the world and the
+	# FootPlanner steps), recorded relative to the moving root. One sample period is exactly one
+	# gait cycle (two steps) at the planner's cadence for this speed.
+	var walk_ctx := {"mode": &"ground", "speed": speed, "run_k": 0.0, "move": STROLL_INPUT,
+		"facing": 0.0, "vel": Vector3(0, 0, -speed), "grounded": true}
+	var idle_ctx := {"mode": &"ground", "speed": 0.0, "run_k": 0.0, "move": 0.0,
+		"facing": 0.0, "vel": Vector3.ZERO, "grounded": true}
+	var probe := PoseGenerator.new()
+	walk_ctx["root"] = start
+	probe.compute(walk_ctx, 1.0 / 60.0)
+	probe.compute(walk_ctx, 1.0 / 60.0)
+	var walk_cycle_t := 2.0 / probe.gait.cadence
+	var cycles := [[walk_ctx, walk_cycle_t, WALK_FRAMES, 0], [idle_ctx, idle_period, IDLE_FRAMES, WALK_FRAMES]]
 	for cyc in cycles:
+		var ctx: Dictionary = cyc[0]
 		var pg := PoseGenerator.new()
 		var frames: int = cyc[2]
 		var dt: float = cyc[1] / frames
-		for i in frames * 4:   # settle the pose smoothing into its periodic steady state
-			pg.compute(cyc[0], dt)
+		var root := start
+		var vel: Vector3 = ctx.vel
+		for i in frames * 6:   # settle smoothing and stepping into their periodic steady state
+			root.origin += vel * dt
+			ctx["root"] = root
+			pg.compute(ctx, dt)
 		for f in frames:
-			c.rig.step(dt, root, Vector3.ZERO, pg.compute(cyc[0], dt))
+			root.origin += vel * dt
+			ctx["root"] = root
+			c.rig.step(dt, root, vel, pg.compute(ctx, dt))
 			c.skin.update_pose()
-			var to_local := to_root * sk.global_transform
+			var to_local := root.affine_inverse() * sk.global_transform
 			var mats: Array[Transform3D] = []
 			for i in bind_bone.size():
 				mats.append(to_local * sk.get_bone_global_pose(bind_bone[i]) * skin.get_bind_pose(i))
@@ -135,6 +148,6 @@ static func _bake(tree: SceneTree) -> Dictionary:
 	mat.set_shader_parameter("walk_frames", WALK_FRAMES)
 	mat.set_shader_parameter("idle_frames", IDLE_FRAMES)
 	mesh.surface_set_material(0, mat)
-	return {"mesh": mesh, "material": mat, "walk_cycle_m": 2.0 * STRIDE, "idle_period": idle_period,
+	return {"mesh": mesh, "material": mat, "walk_cycle_m": speed * walk_cycle_t, "idle_period": idle_period,
 		"stroll_speed": speed, "vertices": nv, "bake_ms": Time.get_ticks_msec() - t0,
 		"pos_data": data}

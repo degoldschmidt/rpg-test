@@ -39,6 +39,8 @@ const TESTS := [
 	["test_punch_prop", "combat", false],
 	["test_no_attack_while_carrying", "objects", false],
 	["test_run_into_npc", "combat", true],
+	["test_gait_planted_feet", "movement", true],
+	["test_gait_stop_and_turn", "movement", false],
 	["test_walk_momentum", "movement", true],
 	["test_run_momentum", "movement", false],
 	["test_skid", "movement", false],
@@ -222,9 +224,10 @@ func test_idle_stability() -> void:
 
 
 ## World position of a puppet joint pivot.
+## Joint position of a puppet segment as displayed (the pose the skin follows).
 func puppet_pivot(bone: StringName) -> Vector3:
 	var b: PuppetBone = player.rig.bones[bone]
-	return b.global_transform * (b.def.pivot - b.def.center)
+	return player.rig.display_transform(b) * (b.def.pivot - b.def.center)
 
 
 func skin_error() -> float:
@@ -244,7 +247,8 @@ func skin_alignment() -> float:
 	var worst := 1.0
 	for bone in pairs:
 		var b: PuppetBone = player.rig.bones[pairs[bone]]
-		var seg := (b.global_transform * (b.def.center - b.def.pivot) - b.global_transform.origin).normalized()
+		var t := player.rig.display_transform(b)
+		var seg := (t * (b.def.center - b.def.pivot) - t.origin).normalized()
 		worst = minf(worst, player.skin.bone_world_direction(bone).dot(seg))
 	return worst
 
@@ -564,6 +568,65 @@ func test_crowd_layer() -> void:
 	check("agents keep personal space", min_gap > 0.4, "(closest pair %.2f m)" % min_gap)
 	layer.queue_free()
 	await physics_frame
+
+
+## Planted feet don't slide, swinging feet clear the ground, at stroll / walk / run.
+func test_gait_planted_feet() -> void:
+	print("gait: planted feet, swing clearance")
+	var g: FootPlanner = player.pose_gen.gait
+	for spec in [["stroll", 0.45, false, 0.08], ["walk", 1.0, false, 0.15], ["run", 1.0, true, 0.3]]:
+		await place(open(), 0.4)
+		inp(Vector2(0, -spec[1]), spec[2])
+		await seconds(1.5 if quick else 2.0)
+		var prev := {}
+		var slip := 0.0
+		var n := 0
+		var clear := 0.0
+		var lo := INF
+		for i in int(1.5 / TICK):
+			await physics_frame
+			lo = minf(lo, player.rig.pelvis().global_position.y - player.global_position.y)
+			for s: StringName in [&"l", &"r"]:
+				var p := player.rig.display_transform(player.rig.bones[StringName("foot_" + s)]).origin
+				if g.stance[s] > 0.2 and g.stance[s] < 0.5 and prev.has(s):
+					slip += Vector2(p.x - prev[s].x, p.z - prev[s].z).length() / TICK
+					n += 1
+				if g.swing[s] >= 0.0:
+					clear = maxf(clear, p.y - 0.035 - player.global_position.y)
+				prev[s] = p
+		inp()
+		slip /= maxf(n, 1)
+		check("%s: planted feet don't slide" % spec[0], n > 0 and slip < 0.1, "(%.3f m/s)" % slip)
+		check("%s: swinging feet clear the ground" % spec[0], clear > spec[3], "(%.2f m)" % clear)
+		check("%s: hips stay up (no lunging)" % spec[0], lo > 0.82, "(pelvis min %.2f m)" % lo)
+
+
+## Stopping settles the feet under the hips; turning on the spot steps the feet round.
+func test_gait_stop_and_turn() -> void:
+	print("gait: stop settles, turning steps")
+	var g: FootPlanner = player.pose_gen.gait
+	await place(open(), 0.4)
+	inp(Vector2(0, -1))
+	await seconds(1.5)
+	inp()
+	await seconds(2.0)
+	var ok := true
+	for s: StringName in [&"l", &"r"]:
+		var side := -1.0 if s == &"l" else 1.0
+		var home := player.root_transform() * Vector3(side * FootPlanner.HIP_X, 0, 0)
+		var p: Vector3 = (g.feet[s] as Transform3D).origin
+		ok = ok and Vector2(p.x - home.x, p.z - home.z).length() < 0.2 and g.stance[s] >= 0.0
+	check("after stopping, both feet are planted under the hips", ok)
+	var ph := g.phase
+	await seconds(0.5)
+	check("standing still doesn't keep stepping", is_equal_approx(g.phase, ph))
+	player.facing_yaw += 1.4   # turn on the spot
+	await seconds(2.0)
+	var yaw_err := 0.0
+	for s: StringName in [&"l", &"r"]:
+		var f: Vector3 = -(g.feet[s] as Transform3D).basis.z
+		yaw_err = maxf(yaw_err, absf(wrapf(atan2(-f.x, -f.z) - player.facing_yaw, -PI, PI)))
+	check("turning on the spot steps the feet round", yaw_err < 0.5, "(worst foot %.2f rad off)" % yaw_err)
 
 
 func test_run_into_npc() -> void:
