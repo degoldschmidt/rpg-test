@@ -579,6 +579,7 @@ func test_punch_prop() -> void:
 		v_punch = maxf(v_punch, bag.linear_velocity.length())
 	check("punch swings the bag", swing > 0.1, "(%.2f m)" % swing)
 	await seconds(4.0)  # let it settle
+	await place(Vector3(p.x, 0, p.z + 0.85), 0.6)
 	await strike("kick")
 	var v_kick := 0.0
 	for i in int(1.0 / TICK):

@@ -118,14 +118,11 @@ func _start(kind: StringName) -> void:
 func _query_hits() -> void:
 	var d: Dictionary = ATTACKS[attack]
 	var limb: PuppetBone = body.rig.bones[d.limb]
-	var sh := SphereShape3D.new()
-	sh.radius = HIT_RADIUS
-	var params := PhysicsShapeQueryParameters3D.new()
-	params.shape = sh
-	params.transform = Transform3D(Basis(), limb.global_position)
-	params.collision_mask = InputSetup.LAYER_PUPPET | InputSetup.LAYER_PROPS
-	params.exclude = _exclude
-	for r in body.get_world_3d().direct_space_state.intersect_shape(params, 16):
+	# The striking limb and the segment behind it (forearm / shin), so a target that is
+	# too close for the fist or foot still gets hit by the forearm or knee.
+	var results := _sphere_hits(limb.global_position)
+	results.append_array(_sphere_hits((body.rig.bones[limb.def.parent] as PuppetBone).global_position))
+	for r in results:
 		var col: Object = r.collider
 		if col is PuppetBone:
 			var target := (col as PuppetBone).rig.get_parent() as PlayerController
@@ -147,6 +144,17 @@ func _query_hits() -> void:
 			var rb := col as RigidBody3D
 			var dir := (rb.global_position - body.global_position).normalized()
 			rb.apply_impulse((dir + Vector3.UP * d.up) * d.prop_impulse, limb.global_position - rb.global_position)
+
+
+func _sphere_hits(at: Vector3) -> Array:
+	var sh := SphereShape3D.new()
+	sh.radius = HIT_RADIUS
+	var params := PhysicsShapeQueryParameters3D.new()
+	params.shape = sh
+	params.transform = Transform3D(Basis(), at)
+	params.collision_mask = InputSetup.LAYER_PUPPET | InputSetup.LAYER_PROPS
+	params.exclude = _exclude
+	return body.get_world_3d().direct_space_state.intersect_shape(params, 16)
 
 
 ## Resolves an incoming hit into a reaction tier.

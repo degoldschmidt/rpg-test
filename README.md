@@ -14,13 +14,16 @@ It follows its animation tightly, wobbles when hit, and collapses into a full ra
 | Action | Keyboard / mouse | Gamepad |
 |---|---|---|
 | Move | WASD | Left stick |
-| Run | Shift | L3 / left trigger |
+| Run | Shift | L3 |
 | Jump (hold for height) | Space | A |
 | Crouch (while running: slide) | Ctrl or C | B |
 | Forward roll | Q | X |
+| Punch | Left mouse / J | Y |
+| Kick | K / V | Right trigger |
+| Guard (hold) | Right mouse / L | Left trigger |
 | Lift / drop, or grab to push and pull | E | RB |
 | Throw a carried object | F | LB |
-| Toggle ragdoll | G | Y |
+| Toggle ragdoll | G | D-pad down |
 | Reset player | R | Back |
 | Camera | Mouse (click to capture, Esc to release) | Right stick |
 | Toggle help | F1 | |
@@ -30,6 +33,12 @@ It follows its animation tightly, wobbles when hit, and collapses into a full ra
 - **Mantle:** jump facing a chest-high ledge (0.6–1.6 m) and you climb straight onto it. A running jump into a ledge keeps some of your speed over the top.
 - **Grab:** jump at a higher ledge (up to about 3.6 m from the ground) to grab it and hang.
 - **While hanging:** A/D shimmies along the ledge and stops at its end. Jump or W climbs up. Crouch or S drops off.
+
+**Combat** (the HUD names each reaction and its strength):
+- **Punch:** a light, quick hit. It makes the target flinch, and the third punch in quick succession staggers them.
+- **Kick:** a heavier hit that staggers. A kick with a run-up, or one landing while the target is already staggered or airborne, knocks them down into a ragdoll, and they get back up.
+- **Guard:** blocks punches from the front. A kick breaks the guard and staggers you, and guard doesn't cover your back.
+- Attacks turn you toward the nearest opponent in front of you. They aren't available while carrying or pushing something.
 
 **Objects** (the HUD shows what E will do):
 - **Lift:** objects up to 25 kg are lifted and carried in both hands. Carrying slows you in proportion to the weight. E drops the object; F throws it, and lighter objects fly further.
@@ -46,6 +55,7 @@ The level is built in code by `scripts/main.gd`. It contains:
 - **Landing platforms:** 2, 5 and 10 m high, each with a ramp up.
 - **Crouch tunnel:** ceiling at 1.5 m.
 - **Jump gaps:** 2.5, 3.5 and 4.5 m.
+- **Arena:** three training dummies (the same active-ragdoll character, tinted red): one stands still, one guards, and one spars with you. The sparring dummy closes in, alternates punches and kicks, and guards when you wind up. There's also a hanging punching bag.
 - **Props yard:** a 4 kg box, an 18 kg sack, a 3 kg ball, an 80 kg crate, a 250 kg block and a 600 kg monolith.
 - **Climbing area:** a 1.2 m mantle block, and an 8 m wide, 3 m tall wall to hang, shimmy and climb, with a higher ledge stacked on top.
 - **Crate pyramid:** physics props.
@@ -99,6 +109,15 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
   - `LEDGE_HANG` pins the capsule under the edge and re-probes the ledge as it shimmies. `CLIMB` moves the capsule up first, then over the edge.
   - The puppet blends through hang → pull → crouch → stand key poses.
   - All tunables are in the "Ledges" group of `MovementConfig`.
+- **Combat** (`scripts/combat/combat.gd`, a `CombatComponent` on every character).
+  - Attacks have windup, active and recovery phases. During the active phase, sphere queries at the striking limb and the segment behind it hit other characters' puppet bodies, and props get an impulse.
+  - Strength is the attack's base strength (punch 1.0, kick 2.2), boosted by run-up speed.
+  - The receiver resolves the hit into a tier: BLOCKED (guarding, hit from the front, below the guard-break strength), GUARD BREAK, KNOCKDOWN, STAGGER, or FLINCH.
+    - KNOCKDOWN: a strong hit, or a staggering hit while staggered, airborne, hanging, climbing or getting up. It reuses the ragdoll.
+    - STAGGER: a medium hit, or the third light hit in a row.
+    - FLINCH: the struck limb goes limp briefly and is knocked along the hit, plus a pose recoil. Movement continues.
+  - Training dummies are `PlayerController`s driven by `DummyBrain` through the same external-input path the tests use.
+  - Thresholds are in the "Combat" group of `MovementConfig`.
 - **Objects** (in `player_controller.gd`, under "objects").
   - Carried objects are driven toward a hold point by a strength-limited force with gravity compensation. Collisions with the body are switched off while held and restored shortly after release.
   - Pushed or pulled objects get a strength-limited horizontal force applied low on the object, so friction doesn't tip it. The capsule follows the grab point, and contacts with the held object never count as hits.
@@ -140,13 +159,14 @@ Muscle stiffness gains are at the top of `scripts/player/ragdoll_rig.gd`. Per-bo
 godot --headless --fixed-fps 120 --path . -s tests/run_tests.gd
 ```
 
-The suite has 109 deterministic gameplay checks. It covers:
+The suite has 136 deterministic gameplay checks. It covers:
 - idle stability and joint-limit sanity
 - walk and run acceleration and inertia
 - skid
 - variable jump height
 - crouch under the tunnel ceiling
 - skinned mesh tracking the puppet: joint positions and limb directions while idle, running and ragdolled
+- combat: punch flinch with physical recoil, punch combo stagger, kick stagger and knock-back, knockdown with a run-up or on a staggered or airborne target, get-up afterwards, guard blocking from the front but not from behind, kicks breaking guard, the sparring dummy hitting the player and the player's guard blocking it, kicks hitting the bag harder than punches, no attacks while carrying
 - objects: lift, carry while running, throw, drop, push and pull the crate, the heavier block being slower, the monolith being too heavy
 - ledges: ground, running and mid-air mantles; grab, hang height and hand placement; shimmy and stopping at the ledge end; climbing up; dropping off without re-grabbing; out-of-reach walls
 - foot IK on a 30° slope and on stairs (feet on the surface and tilted to it, pelvis drop, stair climb without sinking)
@@ -182,5 +202,5 @@ tests/run_tests.gd
 ## Next steps toward the RPG
 
 - Replace the procedural poses with authored animations, sampled as puppet targets, and give the character clothing and textures.
-- Add combat hit reactions through `apply_hit`.
+- Combat systems on top of the reactions: health, more moves, weapons, and enemy AI beyond the training dummies.
 - Move hot paths to C# or GDExtension if profiling shows a need. With many NPCs, put distant characters on a cheaper kinematic-only LOD.
