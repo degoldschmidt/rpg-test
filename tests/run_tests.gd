@@ -669,11 +669,21 @@ func test_sparring_hits_player() -> void:
 	await place(main.markers.spawn)
 
 
+## Stop the bag dead at its rest pose so each strike starts from the same state.
+func still_bag(bag: RigidBody3D, rest: Transform3D) -> void:
+	bag.global_transform = rest
+	bag.linear_velocity = Vector3.ZERO
+	bag.angular_velocity = Vector3.ZERO
+	await seconds(0.2)
+
+
 func test_punch_prop() -> void:
 	print("punching bag")
 	var bag: RigidBody3D = main.props.bag
-	var p := bag.global_position
+	var rest := bag.global_transform
+	var p := rest.origin
 	await place(Vector3(p.x, 0, p.z + 0.85), 0.6)
+	await still_bag(bag, rest)
 	var b0 := bag.global_position
 	await strike("punch")
 	var swing := 0.0
@@ -683,8 +693,8 @@ func test_punch_prop() -> void:
 		swing = maxf(swing, Vector2(bag.global_position.x - b0.x, bag.global_position.z - b0.z).length())
 		v_punch = maxf(v_punch, bag.linear_velocity.length())
 	check("punch swings the bag", swing > 0.1, "(%.2f m)" % swing)
-	await seconds(4.0)  # let it settle
 	await place(Vector3(p.x, 0, p.z + 0.85), 0.6)
+	await still_bag(bag, rest)
 	await strike("kick")
 	var v_kick := 0.0
 	for i in int(1.0 / TICK):

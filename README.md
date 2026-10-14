@@ -28,6 +28,7 @@ It follows its animation tightly, wobbles when hit, and collapses into a full ra
 | Camera | Mouse (click to capture, Esc to release) | Right stick |
 | Toggle help | F1 | |
 | Show physics bodies instead of the mesh | F2 | |
+| Tint characters by performance tier (LOD) | F3 | |
 
 **Ledges:**
 - **Mantle:** jump facing a chest-high ledge (0.6–1.6 m) and you climb straight onto it. A running jump into a ledge keeps some of your speed over the top.
@@ -156,10 +157,23 @@ Muscle stiffness gains are at the top of `scripts/player/ragdoll_rig.gd`. Per-bo
 ## Tests
 
 ```
-godot --headless --fixed-fps 120 --path . -s tests/run_tests.gd
+tests/run.sh quick          # ~20 representative tests, a few seconds
+tests/run.sh full           # everything, one process per group in parallel (~15 s on 4 cores)
+tests/run.sh full combat    # only some groups: core, movement, terrain, objects, combat
+GODOT=/path/to/godot tests/run.sh quick   # if godot isn't on PATH
 ```
 
-The suite has 136 deterministic gameplay checks. It covers:
+A single process can also run a selection:
+
+```
+godot --headless --fixed-fps 120 --path . -s tests/run_tests.gd -- --suite=quick --group=combat --only=test_kick_stagger --list
+```
+
+Each test is registered in the `TESTS` table at the top of `tests/run_tests.gd` with its group and whether it's in the quick suite. `run.sh` prints a per-group summary and exits non-zero on any failure, crash or script error.
+
+**CI** (`.github/workflows/tests.yml`) runs the quick suite on every push and the full suite on pull requests to `main`, using a cached Godot 4.5.1.
+
+The suite has 151 deterministic gameplay checks. It covers:
 - idle stability and joint-limit sanity
 - walk and run acceleration and inertia
 - skid
@@ -177,8 +191,22 @@ The suite has 136 deterministic gameplay checks. It covers:
 - roll-landing save
 - log and bumper knockdowns
 - 30 s of random input with NaN and separation checks
+- LOD: tiers by distance, frozen and parked puppets, promotion on hit, ragdolls staying FULL until they get up
 
-The process exits non-zero on failure.
+## Performance
+
+See [docs/performance.md](docs/performance.md) for the benchmark (`tests/benchmark.gd`) and the character LOD tiers. In short:
+- A fully simulated active-ragdoll character costs about 0.35 ms per 120 Hz physics tick on a 2.1 GHz cloud CPU.
+- Distant characters drop to cheaper tiers: KINEMATIC beyond 25 m (−31 %) and PROXY_ONLY beyond 60 m (−54 %).
+- Hits promote them back to full simulation instantly.
+
+## Watching it without playing
+
+`tests/showcase.gd` contains scripted clips (movement, falls, terrain, ledges, objects, combat, hazards) with captions. Record one to video with Godot's movie writer:
+
+```
+godot --rendering-driver opengl3 --resolution 1280x720 --write-movie clip.avi --fixed-fps 30 --path . -s tests/showcase.gd -- --clip=combat
+```
 
 ## File map
 
@@ -203,4 +231,4 @@ tests/run_tests.gd
 
 - Replace the procedural poses with authored animations, sampled as puppet targets, and give the character clothing and textures.
 - Combat systems on top of the reactions: health, more moves, weapons, and enemy AI beyond the training dummies.
-- Move hot paths to C# or GDExtension if profiling shows a need. With many NPCs, put distant characters on a cheaper kinematic-only LOD.
+- Scale crowds further (see [docs/performance.md](docs/performance.md)): 30 Hz logic for distant characters, skipping off-screen skins, and moving the pose generator, FK/IK and drive to GDExtension.
