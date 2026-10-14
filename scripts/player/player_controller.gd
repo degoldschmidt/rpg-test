@@ -462,7 +462,9 @@ func _update_facing(dt: float) -> void:
 	if hv.length() < 0.3:
 		return
 	var target := atan2(-hv.x, -hv.z)
-	var rate := 3.0 if state == State.AIR else 12.0
+	# On the ground the body turns round at a pace the feet can step with (a 180° turn is a quick
+	# pivot step, ~0.4 s); velocity itself turns as fast as the movement rules allow.
+	var rate := 3.0 if state == State.AIR else 8.0
 	facing_yaw = rotate_toward(facing_yaw, target, rate * dt)
 
 

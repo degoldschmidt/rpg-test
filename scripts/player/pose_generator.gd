@@ -16,6 +16,9 @@ var time := 0.0
 var gait := FootPlanner.new()
 var _kick_w := 0.0
 var _arms_free := 1.0   ## arm swing and torso twist give way while the arms are busy
+var _root := Transform3D()
+var _bank := 0.0        ## lean into the current turn (rad, + = to the left)
+var _swing_s := 0.0     ## leg scissor: + when the right thigh is ahead of the left
 var _cur: Dictionary = {}
 var _root_rot := Quaternion.IDENTITY
 var _root_off := Vector3.ZERO
@@ -67,21 +70,20 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 				e[StringName("thigh_" + s)].x += 0.15
 				e[StringName("shin_" + s)].x -= 0.35
 			if c.get("skid", false):
-				e[&"spine"].x += 0.4
-				root_e.x += 0.3
-				off.y -= 0.12
-				e[&"thigh_l"].x += 0.6
-				e[&"shin_l"].x -= 0.1
-				e[&"thigh_r"].x -= 0.1
-				e[&"shin_r"].x -= 0.8
-				e[&"upper_arm_l"] += Vector3(0.9, 0, -0.9)
-				e[&"upper_arm_r"] += Vector3(0.9, 0, 0.9)
+				# Braking hard: sit back over the braking steps (the feet are placed by the
+				# planner), arms come forward for balance.
+				e[&"spine"].x += 0.15
+				root_e.x += 0.22
+				off.y -= 0.06
+				e[&"head"].x -= 0.15
+				e[&"upper_arm_l"] += Vector3(0.55, 0, -0.35)
+				e[&"upper_arm_r"] += Vector3(0.55, 0, 0.35)
 			else:
-				# Lean into acceleration (back when braking) and bank into turns.
+				# Lean into acceleration, back when braking (banking into turns is added with
+				# the gait, as a lean of the whole body over the feet).
 				root_e.x -= clampf(lean.y * 0.025, -0.25, 0.3)
 				e[&"spine"].x -= clampf(lean.y * 0.015, -0.15, 0.2)
 				e[&"head"].x += clampf(lean.y * 0.02, -0.2, 0.25)
-				root_e.z -= clampf(lean.x * 0.04, -0.4, 0.4)
 		&"slide":
 			rate = 10.0
 			root_e.x += 0.45
@@ -285,9 +287,17 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	# Foot placement on whenever the feet are meant to be on the ground; terrain foot IK for
 	# the other grounded poses (getting up, sliding).
 	var stepping := mode in [&"ground", &"crouch", &"stumble", &"stagger"] and c.has("root")
+	var braking: float = 1.0 if c.get("skid", false) else clampf(-lean.y / 10.0, 0.0, 1.0)
 	gait.update({"grounded": stepping and c.get("grounded", true), "root": c.get("root", Transform3D()),
 		"facing": c.get("facing", 0.0), "vel": c.get("vel", Vector3.ZERO), "space": c.get("space"),
-		"crouch": c.get("crouch", 0.0)}, dt)
+		"crouch": c.get("crouch", 0.0), "brake": braking}, dt)
+	_root = c.get("root", Transform3D())
+	var v_now: Vector3 = c.get("vel", Vector3.ZERO)
+	# Bank into turns like a runner: lean = atan(v * turn rate / g), whole body over the feet.
+	# (Only for real turning at speed: reversing through a standstill flips the velocity's heading.)
+	var hv := Vector2(v_now.x, v_now.z).length()
+	var bank_t := clampf(atan(hv * clampf(gait.turn_rate, -3.5, 3.5) / 9.8), -0.35, 0.35) * smoothstep(2.0, 4.0, hv)
+	_bank = lerpf(_bank, bank_t if stepping else 0.0, 1.0 - exp(-6.0 * dt))
 	var gw := gait.weight
 	_kick_w = move_toward(_kick_w, 1.0 if atk.get("kind", &"") == &"kick" else 0.0, dt * 8.0)
 	var busy: bool = not atk.is_empty() or c.get("guard", false) or arm_mode != &"" or not hand_targets.is_empty() \
@@ -312,25 +322,31 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	var out := {"bones": _cur, "root_rot": _root_rot, "root_offset": _root_off, "foot_ik": _ik_w * (1.0 - gw),
 		"hand_ik": _hand_w if not hand_targets.is_empty() else 0.0, "hand_targets": hand_targets}
 	if gw > 0.001:
-		_add_gait_motion(out, gw)
+		_add_gait_motion(out, gw, dt)
 		out["feet"] = gait.feet
 		out["feet_w"] = {&"l": gw, &"r": gw * (1.0 - _kick_w)}
 	return out
 
 
 ## Pelvis, torso and arm motion that goes with the steps, layered on top of the smoothed pose
-## (it follows the step phase exactly, so it isn't smoothed).
-func _add_gait_motion(out: Dictionary, w: float) -> void:
+## (it follows the legs exactly, so it isn't smoothed).
+func _add_gait_motion(out: Dictionary, w: float, dt: float) -> void:
 	var g := gait
 	var amt := g.moving_k * w
+	var off := Vector3.ZERO
+	var re := Vector3.ZERO
+	# Bank: the whole body leans into the turn about the feet, so the hips shift to the inside
+	# while the feet stay on the path.
+	re.z += _bank * w
+	off.x -= sin(_bank * w) * 0.95
 	if amt <= 0.001:
+		out.root_rot = (out.root_rot as Quaternion) * Quaternion.from_euler(re)
+		out.root_offset = (out.root_offset as Vector3) + off
 		return
 	var r := g.run_k
 	var sp := g.sprint_k
 	var ph := g.phase * TAU
 	var mid := g.duty * PI          # left foot mid-stance
-	var off := Vector3.ZERO
-	var re := Vector3.ZERO
 	# Walking: weight shifts over the stance foot and the swing-side hip drops.
 	var sway := -cos(ph - mid)
 	off.x += 0.03 * sway * (1.0 - r) * amt
@@ -340,9 +356,14 @@ func _add_gait_motion(out: Dictionary, w: float) -> void:
 	off.y -= ((0.02 + 0.015 * sp) * cos(TAU * (psi - g.duty)) + 0.045 + 0.03 * sp) * r * amt
 	var run_lean := (0.13 * r + 0.12 * sp) * amt
 	re.x -= run_lean
-	# Hips turn with the forward leg, shoulders counter-rotate.
+	# Arms and twist follow the legs themselves (not the gait phase): the thighs' forward swing,
+	# from the planned feet, so the arms are always contralateral whatever the gait or turn.
+	var span := lerpf(0.55, lerpf(1.0, 1.3, sp), r)
+	var scissor := clampf((_thigh_pitch(&"r") - _thigh_pitch(&"l")) / span, -1.0, 1.0)
+	_swing_s = lerpf(_swing_s, scissor, 1.0 - exp(-18.0 * dt))   # arms trail the legs slightly
+	# Hips turn with the forward leg (left leg ahead: left hip forward), shoulders counter-rotate.
 	# Busy arms (attacking, guarding, carrying) keep the shoulders square instead.
-	var twist := -cos(ph) * lerpf(0.12, 0.2, r)
+	var twist := _swing_s * lerpf(0.12, 0.2, r)
 	var arms := amt * _arms_free
 	re.y += twist * amt
 	var bones: Dictionary = (out.bones as Dictionary).duplicate()
@@ -350,7 +371,6 @@ func _add_gait_motion(out: Dictionary, w: float) -> void:
 	_rot(bones, &"chest", Vector3(0, -twist * (amt - 0.3 * arms), 0))
 	# Keep the eyes level against the lean.
 	_rot(bones, &"head", Vector3((0.1 * r + 0.09 * sp) * amt, 0, 0))
-	# Arms swing against the legs; elbows bend more the faster we go.
 	# Shoulder swing (+ forward) and elbow bend at the front and back of the swing. Running,
 	# the hands drive back past the hip with the elbow opening, and come forward to about chest
 	# height with the elbow closing; walking, the arms swing loosely with a slight bend.
@@ -361,14 +381,32 @@ func _add_gait_motion(out: Dictionary, w: float) -> void:
 	# Arms are posed relative to the chest: give back the run lean so they still hang from the
 	# shoulders instead of tilting back with the torso.
 	var comp := run_lean * _arms_free
-	var sw := cos(ph - 0.35)
-	for s in [["l", -sw, -1.0], ["r", sw, 1.0]]:
+	# Left arm forward when the right leg is forward, and vice versa.
+	for s in [["l", _swing_s, -1.0], ["r", -_swing_s, 1.0]]:
 		var k: float = (float(s[1]) + 1.0) * 0.5   # 0 = arm fully back, 1 = fully forward
 		_rot(bones, StringName("upper_arm_" + s[0]), Vector3(lerpf(back_a, fwd_a, k) * arms + comp, 0, 0.1 * float(s[2]) * r * arms))
 		_rot(bones, StringName("forearm_" + s[0]), Vector3(lerpf(elbow_b, elbow_f, k) * arms, 0, 0))
 	out.bones = bones
 	out.root_rot = (out.root_rot as Quaternion) * Quaternion.from_euler(re)
 	out.root_offset = (out.root_offset as Vector3) + off
+
+
+## Forward swing of a thigh (rad, + = knee ahead of the hip) for the planned foot: the leg's
+## two-bone solve in the body's forward plane, knee bending forward (as RagdollRig._leg_ik does).
+const THIGH := 0.365
+const SHIN := 0.465
+func _thigh_pitch(s: StringName) -> float:
+	if not gait.feet.has(s):
+		return 0.0
+	var side := -1.0 if s == &"l" else 1.0
+	var hip := _root * Vector3(side * FootPlanner.HIP_X, 0.88, 0)
+	var d: Vector3 = (gait.feet[s] as Transform3D).origin - hip
+	var fwd := _root.basis * Vector3.FORWARD
+	var f := d.dot(fwd)
+	var h := -d.y
+	var dist := clampf(sqrt(f * f + h * h), 0.05, THIGH + SHIN - 0.001)
+	var bend := acos(clampf((THIGH * THIGH + dist * dist - SHIN * SHIN) / (2.0 * THIGH * dist), -1.0, 1.0))
+	return atan2(f, h) + bend
 
 
 func _rot(bones: Dictionary, b: StringName, euler: Vector3) -> void:

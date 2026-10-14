@@ -353,12 +353,16 @@ func _foot_ik(out: Dictionary, root: Transform3D, pose: Dictionary, w: float, k:
 	return out
 
 
-## Knees bend forward along the foot (toes point -Z), turned slightly out, never backwards.
+## Knees bend forward, between where the foot points (toes -Z) and where the body faces (so a
+## foot that is still turned from the last heading can't twist the knee), turned slightly out,
+## never backwards.
 func _knee_dir(root: Transform3D, foot_basis: Basis, s: StringName) -> Vector3:
+	var body := root.basis * Vector3.FORWARD
 	var fwd := -foot_basis.z
 	fwd.y = 0.0
+	fwd = fwd.normalized() + body if fwd.length_squared() > 0.01 else body
 	if fwd.length_squared() < 0.01:
-		fwd = root.basis * Vector3.FORWARD
+		fwd = body
 	var side := -1.0 if s == &"l" else 1.0
 	return (fwd.normalized() + (root.basis * Vector3.RIGHT) * side * 0.12).normalized()
 

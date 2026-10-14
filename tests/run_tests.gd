@@ -41,6 +41,8 @@ const TESTS := [
 	["test_run_into_npc", "combat", true],
 	["test_gait_planted_feet", "movement", true],
 	["test_gait_stop_and_turn", "movement", false],
+	["test_gait_arms_contralateral", "movement", true],
+	["test_gait_turns", "movement", false],
 	["test_walk_momentum", "movement", true],
 	["test_run_momentum", "movement", false],
 	["test_skid", "movement", false],
@@ -647,6 +649,95 @@ func test_gait_stop_and_turn() -> void:
 		var f: Vector3 = -(g.feet[s] as Transform3D).basis.z
 		yaw_err = maxf(yaw_err, absf(wrapf(atan2(-f.x, -f.z) - player.facing_yaw, -PI, PI)))
 	check("turning on the spot steps the feet round", yaw_err < 0.5, "(worst foot %.2f rad off)" % yaw_err)
+
+
+## Forward swing (rad, + = forward) of a displayed limb segment, in the body's forward plane.
+func segment_pitch(bone: StringName) -> float:
+	var b: PuppetBone = player.rig.bones[bone]
+	var t := player.rig.display_transform(b)
+	var d := t * (b.def.center - b.def.pivot) - t.origin
+	return atan2(d.dot(player.facing_dir()), -d.y)
+
+
+static func correlation(a: Array, b: Array) -> float:
+	var ma: float = a.reduce(func(s, x): return s + x, 0.0) / a.size()
+	var mb: float = b.reduce(func(s, x): return s + x, 0.0) / b.size()
+	var sab := 0.0
+	var saa := 0.0
+	var sbb := 0.0
+	for i in a.size():
+		sab += (a[i] - ma) * (b[i] - mb)
+		saa += (a[i] - ma) * (a[i] - ma)
+		sbb += (b[i] - mb) * (b[i] - mb)
+	return sab / sqrt(maxf(saa * sbb, 1e-9))
+
+
+## Arms swing against the legs: left arm forward while the right leg is forward.
+func test_gait_arms_contralateral() -> void:
+	print("gait: contralateral arm swing")
+	for spec in [["walk", 0.45, false], ["jog", 1.0, false], ["run", 1.0, true]]:
+		await place(open(), 0.4)
+		inp(Vector2(0, -spec[1]), spec[2])
+		await seconds(1.5 if quick else 2.0)
+		var arm_l := []
+		var arm_r := []
+		var legs := []
+		for i in int(1.5 / TICK):
+			await physics_frame
+			arm_l.append(segment_pitch(&"upper_arm_l"))
+			arm_r.append(segment_pitch(&"upper_arm_r"))
+			legs.append(segment_pitch(&"thigh_r") - segment_pitch(&"thigh_l"))
+		inp()
+		var cl := correlation(arm_l, legs)
+		var cr := correlation(arm_r, legs)
+		check("%s: left arm swings with the right leg, right arm with the left" % spec[0], cl > 0.7 and cr < -0.7,
+			"(left arm vs right-left legs %.2f, right arm %.2f)" % [cl, cr])
+
+
+## Slalom and a turn-around at speed: feet don't cross or twist under the body, the body
+## leans into the turns, knees keep bending forward.
+func test_gait_turns() -> void:
+	print("gait: slalom and turn-around")
+	var g: FootPlanner = player.pose_gen.gait
+	await place(open() + Vector3(0, 0, 20), 0.4)
+	inp(Vector2(0, -1), true)
+	await seconds(1.5)
+	var cross := -INF
+	var twist := 0.0
+	var knee := INF
+	var bank_ok := 0
+	var bank_n := 0
+	var t := 0.0
+	for i in int(5.5 / TICK):
+		if t < 4.0:
+			var a := sin(t * 2.6) * 0.9
+			player.external_input = {"move": Vector2(sin(a), -cos(a)), "run": true}
+		else:
+			inp(Vector2(0, 1), true)   # turn around at speed
+		await physics_frame
+		t += TICK
+		var right := Basis(Vector3.UP, player.facing_yaw) * Vector3.RIGHT
+		var fl: Vector3 = (g.feet[&"l"] as Transform3D).origin
+		var fr: Vector3 = (g.feet[&"r"] as Transform3D).origin
+		if t < 4.0 or t > 4.9:   # mid-pivot the feet may pass each other for a moment
+			cross = maxf(cross, (fl - fr).dot(right))
+		knee = minf(knee, minf(knee_bend("l"), knee_bend("r")))
+		var pel := player.rig.display_transform(player.rig.pelvis()).basis
+		for s: StringName in [&"l", &"r"]:
+			if g.stance[s] >= 0.0:
+				var ff := -(g.feet[s] as Transform3D).basis.z
+				var pf := -pel.z
+				twist = maxf(twist, absf(wrapf(atan2(-ff.x, -ff.z) - atan2(-pf.x, -pf.z), -PI, PI)))
+		if t < 4.0 and absf(g.turn_rate) > 1.0 and player.horizontal_speed() > 5.0:
+			bank_n += 1
+			if signf(pel.y.dot(-right)) == signf(g.turn_rate):   # turning left: top leans left
+				bank_ok += 1
+	inp()
+	await seconds(1.0)
+	check("feet don't cross while turning", cross < 0.05, "(worst %.2f m)" % cross)
+	check("planted feet stay under the body's heading (no twisted legs)", rad_to_deg(twist) < 60.0, "(worst %.0f°)" % rad_to_deg(twist))
+	check("the body leans into the turns", bank_n > 0 and bank_ok > 0.9 * bank_n, "(%d of %d ticks)" % [bank_ok, bank_n])
+	check("knees keep bending forward through the turns", knee > -0.01, "(worst %.3f m)" % knee)
 
 
 func test_run_into_npc() -> void:
