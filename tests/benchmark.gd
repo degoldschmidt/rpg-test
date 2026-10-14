@@ -32,8 +32,13 @@ func _run() -> void:
 	var md := _table()
 	print(md)
 	if out_path != "":
-		var f := FileAccess.open("res://" + out_path, FileAccess.WRITE)
-		f.store_string(md)
+		# Absolute paths as given; relative ones are relative to the project.
+		var path := out_path if out_path.is_absolute_path() else "res://" + out_path
+		var f := FileAccess.open(path, FileAccess.WRITE)
+		if f:
+			f.store_string(md)
+		else:
+			push_error("Could not write %s: %s" % [path, error_string(FileAccess.get_open_error())])
 	quit()
 
 

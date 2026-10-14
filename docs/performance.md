@@ -17,27 +17,26 @@ The benchmark builds a flat floor and spawns N characters in a grid for each sce
 
 ## Results (Godot 4.5.1, Jolt)
 
-| Scenario | 1 char | 10 | 25 | 50 | 100 | ms per character (at 50) |
+| Scenario | 1 char | 10 | 25 | 50 | 100 | ms per character (at 100) |
 |---|---|---|---|---|---|---|
-| FULL, idle | 0.62 | 3.79 | 8.13 | 17.02 | 36.83 | 0.34 |
-| FULL, walking | 0.65 | 4.01 | 8.83 | 17.48 | 41.68 | 0.35 |
-| FULL, ragdolled | 0.59 | 3.02 | 6.88 | 14.46 | 31.55 | 0.29 |
-| KINEMATIC, walking | 0.42 | 2.31 | 5.70 | 12.00 | 21.41 | 0.24 (−31 %) |
-| PROXY_ONLY, walking | 0.35 | 1.73 | 4.23 | 8.06 | 16.19 | 0.16 (−54 %) |
+| FULL, idle | 0.47 | 3.45 | 8.97 | 14.46 | 34.75 | 0.35 |
+| FULL, walking | 0.46 | 3.56 | 8.31 | 17.37 | 38.86 | 0.39 |
+| FULL, ragdolled | 0.48 | 2.93 | 6.60 | 13.04 | 32.50 | 0.33 |
+| KINEMATIC, walking | 0.18 | 0.71 | 1.48 | 2.96 | 5.25 | 0.053 (−86 %) |
+| PROXY_ONLY, walking | 0.25 | 0.39 | 0.88 | 1.71 | 3.98 | 0.040 (−90 %) |
 
 All values are ms per physics tick. Cost scales linearly. There is no physics blow-up: Jolt handles hundreds of jointed bodies easily.
 
 ### What it means
 
-- **Full active ragdoll costs about 0.35 ms per character per tick.** Within a ~4 ms per-tick physics budget (half the 120 Hz frame), that's about **10–12 fully simulated characters** on this CPU, or roughly 20–25 on a desktop.
+- **Full active ragdoll costs about 0.35 ms per character per tick.** Within a ~4 ms per-tick physics budget (half the 120 Hz frame), that's about **10–12 fully simulated characters** on this CPU, or roughly 20–25 on a desktop. Hence the FULL budget of 5.
 - **GDScript is about half the cost**, not physics. Pose generation, FK/IK and the per-body drive dominate. Ragdolls are the cheapest FULL state because they skip the pose and drive.
-- **KINEMATIC (25–60 m)** costs about 0.24 ms per character. It animates at 60 Hz, places frozen bodies on the animation, and skips IK, while bodies stay hittable.
-- **PROXY_ONLY (> 60 m)** costs about 0.16 ms per character. It animates at 30 Hz, bodies are parked and out of collision, and the skin reads the animation directly. What remains is the capsule's movement and state machine, plus per-node engine overhead.
-- **Example crowd at about 4 ms per tick:** 4 full + 6 kinematic + 10 proxy-only ≈ 1.4 + 1.4 + 1.6 = 4.4 ms. Beyond a few dozen characters, the next steps are:
-  1. Run distant characters' controller logic at 30 Hz too, not just their pose.
-  2. Skip skin updates for characters that are off-screen (VisibleOnScreenNotifier3D).
-  3. Lower the global physics rate to 60 Hz if the feel survives it. That halves everything.
-  4. Move the hot GDScript paths (pose generator, FK/IK, drive) to C++ via GDExtension, typically 10–50× faster.
+- **KINEMATIC costs about 0.05 ms per character** (7× cheaper). The controller ticks at 30 Hz, the puppet bodies are parked outside the physics server, and the skin plays the animation.
+- **PROXY_ONLY costs about 0.04 ms per character** (9× cheaper). Same as KINEMATIC, at 15 Hz.
+- **Example: 5 full + 20 kinematic + 75 proxy-only** ≈ 1.8 + 1.1 + 3.0 = 5.9 ms per tick in the worst case. In practice it's lower, because reduced tiers spread their work over staggered ticks (see the crowd test below). Next steps if more is needed:
+  1. Skip skin updates for characters that are off-screen (VisibleOnScreenNotifier3D).
+  2. Lower the global physics rate to 60 Hz if the feel survives it. That halves everything.
+  3. Move the hot GDScript paths (pose generator, FK/IK, drive, skinning) to C++ via GDExtension, typically 10–50× faster.
 
 ## LOD tiers
 
