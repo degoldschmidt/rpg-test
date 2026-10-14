@@ -230,7 +230,7 @@ See [docs/performance.md](docs/performance.md) for the benchmark (`tests/benchma
 
 ## Watching it without playing
 
-`tests/showcase.gd` contains scripted clips (movement, gait, falls, terrain, ledges, objects, combat, hazards) with captions. Record one to video with Godot's movie writer:
+`tests/showcase.gd` contains scripted clips (locomotion, movement, gait, falls, terrain, ledges, objects, combat, hazards) with captions. Record one to video with Godot's movie writer:
 
 ```
 godot --rendering-driver opengl3 --resolution 1280x720 --write-movie clip.avi --fixed-fps 30 --path . -s tests/showcase.gd -- --clip=combat
