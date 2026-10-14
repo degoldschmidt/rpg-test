@@ -41,17 +41,60 @@ All values are ms per physics tick. Cost scales linearly. There is no physics bl
 
 ## LOD tiers
 
-`scripts/player/character_lod.gd`, with ranges in the "Performance" group of `MovementConfig`:
+`scripts/player/character_lod.gd`, with settings in the "Performance" group of `MovementConfig`. Every 0.25 s the characters are ranked by distance to the player and assigned within a **budget**:
 
-| Tier | Distance to the player | Puppet | Animation | Hittable |
+| Tier | Who | Puppet | Controller + animation | Hittable |
 |---|---|---|---|---|
-| FULL | < 25 m | active ragdoll (simulated, driven) | 120 Hz + foot/hand IK | yes, with physical reactions |
-| KINEMATIC | 25–60 m | frozen bodies snapped to the animation | 60 Hz, no IK | yes (promotes to FULL on hit) |
-| PROXY_ONLY | > 60 m | parked, out of collision | 30 Hz, no IK | no (only the capsule collides) |
+| FULL | nearest 5 within 25 m (`lod_max_full`) | active ragdoll (simulated, driven) | 120 Hz + foot/hand IK | yes, with physical reactions |
+| KINEMATIC | next 20 within 60 m (`lod_max_kinematic`) | bodies parked outside the physics server; the skin plays the animation | 30 Hz, no IK | yes: a strike or shove touching the capsule promotes it to FULL |
+| PROXY_ONLY | everyone else | parked | 15 Hz, no IK | yes, same as KINEMATIC |
 
-- A hit, knockdown or bumper launch promotes a character to FULL immediately, and it stays FULL for 3 s afterwards.
-- Ragdolling, getting up, staggering, attacking, hanging, climbing and carrying always stay FULL.
-- The player is always FULL.
-- F3 in game tints characters by tier, and the HUD shows how many are in each tier.
+- **Staggered updates.** Reduced tiers update on staggered phases, so their work spreads evenly across ticks instead of landing on one frame.
+- **Promotion.** A hit, shove, knockdown or bumper launch promotes a character to FULL immediately, and it stays FULL for 3 s afterwards.
+- **Always FULL:** characters that are ragdolling, getting up, staggering, attacking, hanging, climbing or carrying (these count against the FULL budget), and the player.
+- **Debug view.** F3 in game tints characters by tier, and the HUD shows how many are in each tier.
 
-**Known limit:** hazards and thrown props don't knock over characters in the reduced tiers. They promote only through `receive_hit` / `apply_hit` / `enter_ragdoll`, or by coming within 25 m of the player.
+**Known limit:** hazards and thrown props don't knock over characters in the reduced tiers. Only melee strikes, being run into, `receive_hit` / `apply_hit` / `enter_ragdoll`, or entering the FULL budget promote them.
+
+## Crowd test: running through 100 NPCs
+
+`tests/crowd.gd` runs a scripted 22 s scenario. 100 wandering NPCs stand in a 26 m square, and the player sprints through them along four waypoints. Running into NPCs staggers them, or knocks them down at sprint speed.
+
+```
+# measure: real CPU time per 60 fps frame (2 physics ticks + AI + animation + skinning), headless
+godot --headless --fixed-fps 60 --path . -s tests/crowd.gd -- --measure --timeline=crowd.json
+# video of the same deterministic run, overlaying the measured simulation FPS
+godot --rendering-driver opengl3 --resolution 1280x720 --write-movie crowd.avi --fixed-fps 60 \
+  --path . -s tests/crowd.gd -- --timeline=crowd.json
+```
+
+**Result** on the 4-core 2.1 GHz cloud VM, with no rendering (there's no GPU here):
+
+- average **13.2 ms per frame (76 FPS)**
+- 99th percentile 20.9 ms (48 FPS)
+- 90 % of frames within the 16.7 ms budget for 60 fps
+- tiers on average: 5 FULL, 20 KINEMATIC, 75 PROXY_ONLY
+
+What it took, from the first measurement (76 ms per frame, 13 FPS):
+
+| Step | Simulation FPS |
+|---|---|
+| First run: every NPC inside the 25 m range was FULL | 13 |
+| LOD budget instead of pure distance (8 FULL, 24 KINEMATIC) | 43 |
+| Reduced tiers tick their whole controller at a stride; parked bodies leave the physics server; no drive outside FULL | — |
+| Skin updates only the ~20 bones that move (not fingers and toes); flat-table FK; staggered phases | 62 |
+| Budget 5 FULL / 20 KINEMATIC | 68 |
+| Background update rates 30 Hz / 15 Hz | 76 |
+
+Remaining cost per frame:
+
+| Section | ms per frame |
+|---|---|
+| Controller GDScript | 7.2 (FK/IK 2.8, pose 1.2, `move_and_slide` 1.1, rest 2.1) |
+| Skinning | 2.0 |
+| Per-body drive | 0.5 |
+| Engine physics and everything else | 3.5 |
+
+The next big win would be moving the pose generator, FK/IK and skinning to C++ (GDExtension).
+
+Rendering isn't included. A real GPU draws 100 low-poly skinned characters in well under a millisecond of CPU submit time, but that wasn't measurable here.

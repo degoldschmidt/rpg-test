@@ -197,8 +197,9 @@ The suite has 151 deterministic gameplay checks. It covers:
 
 See [docs/performance.md](docs/performance.md) for the benchmark (`tests/benchmark.gd`) and the character LOD tiers. In short:
 - A fully simulated active-ragdoll character costs about 0.35 ms per 120 Hz physics tick on a 2.1 GHz cloud CPU.
-- Distant characters drop to cheaper tiers: KINEMATIC beyond 25 m (−31 %) and PROXY_ONLY beyond 60 m (−54 %).
-- Hits promote them back to full simulation instantly.
+- A budgeted LOD keeps only the nearest 5 characters fully simulated and the next 20 in a cheaper KINEMATIC tier; everyone else is PROXY_ONLY. Reduced tiers park their physics bodies and update at 30 Hz or 15 Hz.
+- Hits, strikes and being run into promote a character back to full simulation instantly.
+- **Crowd test** (`tests/crowd.gd`): the player sprints through 100 wandering NPCs, knocking some over, at about 76 FPS of simulation on this cloud CPU (CPU only, no rendering).
 
 ## Watching it without playing
 
