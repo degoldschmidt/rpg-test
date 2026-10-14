@@ -42,6 +42,8 @@ var _target := {}         ## side -> predicted landing ankle position
 var _target_yaw := {}
 var _target_normal := {}
 var _swinging := {&"l": false, &"r": false}
+var _lift_rel := {}       ## side -> lift-off position relative to the root at lift-off
+var _land_root := {}      ## side -> predicted root position at touchdown
 var _prev_facing := 0.0
 var _yaw_rate := 0.0
 
@@ -110,6 +112,7 @@ func update(c: Dictionary, dt: float) -> void:
 		if in_swing and not _swinging[s]:
 			_swinging[s] = true
 			_lift[s] = _planted_pose(s, 1.0).origin   # from the heel-up push-off pose
+			_lift_rel[s] = (_lift[s] as Vector3) - root.origin
 			_lift_yaw[s] = _yaw[s]
 			_lift_pitch[s] = _stance_pitch(1.0)
 		elif not in_swing and _swinging[s]:
@@ -122,7 +125,7 @@ func update(c: Dictionary, dt: float) -> void:
 			_predict_landing(s, root, facing, vel, (1.0 - u) * swing_t, stance_t, space)
 			swing[s] = u
 			stance[s] = -1.0
-			feet[s] = _swing_pose(s, u)
+			feet[s] = _swing_pose(s, u, root)
 		else:
 			var st := ph / duty
 			stance[s] = st
@@ -137,6 +140,7 @@ func _predict_landing(s: StringName, root: Transform3D, facing: float, vel: Vect
 	var turn := clampf(_yaw_rate * t_rem, -1.2, 1.2)
 	var vel_land := vel.rotated(Vector3.UP, turn)
 	var body := root.origin + (vel + vel_land) * 0.5 * t_rem
+	_land_root[s] = body
 	var yaw_land := facing + turn
 	var side := -1.0 if s == &"l" else 1.0
 	var width := lerpf(HIP_X, 0.06, run_k)
@@ -151,17 +155,30 @@ func _predict_landing(s: StringName, root: Transform3D, facing: float, vel: Vect
 	_target_yaw[s] = yaw_land - side * 0.08
 
 
-func _swing_pose(s: StringName, u: float) -> Transform3D:
+## Swing keys (u = 0, .25, .5, .75, 1): forward progress from lift-off to landing, measured
+## relative to the moving body, and height as a fraction of the swing height.
+## Walking: an even, low arc. Running: the heel comes up behind first, the foot passes under the
+## hips with the knee driving forward, the shin hangs nearly vertical, and only then the foot
+## reaches out to land.
+const WALK_FWD := [0.0, 0.2, 0.5, 0.82, 1.0]
+const WALK_UP := [0.0, 0.75, 1.0, 0.6, 0.0]
+const RUN_FWD := [0.0, 0.1, 0.42, 0.85, 1.0]
+const RUN_UP := [0.0, 0.85, 1.0, 0.62, 0.0]
+
+
+func _swing_pose(s: StringName, u: float, root: Transform3D) -> Transform3D:
 	var a: Vector3 = _lift[s]
 	var b: Vector3 = _target[s]
-	# The swing foot keeps up with the body (it travels two step lengths while the body travels
-	# one); walking it eases in and out, running the heel stays back a little while it tucks up.
-	var ease := smoothstep(0.0, 1.0, u)
-	var fwd := lerpf(ease, u + 0.6 * (ease - u), run_k)
-	var p := a.lerp(b, fwd)
-	var arc_u := pow(u, lerpf(1.0, 0.6, run_k))
+	# Horizontal path relative to the body, so the foot's motion reads the same at any speed:
+	# from where it lifted off (relative to the hips then) to where it will land (relative to
+	# where the hips will be then).
+	var land_rel: Vector3 = b - (_land_root[s] as Vector3)
+	var fwd := lerpf(_curve(WALK_FWD, u), _curve(RUN_FWD, u), run_k)
+	var rel := (_lift_rel[s] as Vector3).lerp(land_rel, fwd)
+	var p := root.origin + rel
+	var up := lerpf(_curve(WALK_UP, u), _curve(RUN_UP, u), run_k)
 	p.y = lerpf(a.y, b.y, smoothstep(0.0, 1.0, u)) + maxf(b.y - a.y, 0.0) * sin(PI * u) * 0.5 \
-		+ swing_height * sin(PI * arc_u)
+		+ swing_height * up
 	var yaw := lerp_angle(_lift_yaw[s], _target_yaw[s], smoothstep(0.1, 0.8, u))
 	# Toe points down after push-off, levels out, then the toe comes up for the heel strike.
 	var land_pitch := _stance_pitch(0.0)
@@ -169,6 +186,19 @@ func _swing_pose(s: StringName, u: float) -> Transform3D:
 	pitch = lerpf(pitch, land_pitch, smoothstep(0.6, 1.0, u))
 	var n: Vector3 = (_normal[s] as Vector3).slerp(_target_normal[s], u)
 	return Transform3D(_foot_basis(yaw, n) * Basis(Vector3.RIGHT, pitch), p)
+
+
+## Catmull-Rom through 5 evenly spaced keys (u = 0 .. 1).
+static func _curve(k: Array, u: float) -> float:
+	var x := clampf(u, 0.0, 1.0) * 4.0
+	var i := mini(int(x), 3)
+	var t := x - i
+	var p0: float = k[maxi(i - 1, 0)]
+	var p1: float = k[i]
+	var p2: float = k[i + 1]
+	var p3: float = k[mini(i + 2, 4)]
+	return 0.5 * (2.0 * p1 + (p2 - p0) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t * t
+		+ (3.0 * p1 - p0 - 3.0 * p2 + p3) * t * t * t)
 
 
 func _planted_pose(s: StringName, st: float) -> Transform3D:

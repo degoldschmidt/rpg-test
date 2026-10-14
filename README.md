@@ -119,7 +119,7 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
   - **Overreach.** A planted foot left far behind (turning around) steps right away instead of lunging.
   - **Legs.** Placed by two-bone IK (`_leg_ik` in `ragdoll_rig.gd`). The pelvis drops when a foot would be out of reach, which also gives the walk its natural low point at double support.
   - **Upper body.** The step phase drives a weight shift over the stance foot and a hip drop on the swing side (walking), a bounce and forward lean (running), hips turning with the forward leg and shoulders counter-rotating, and arms swinging against the legs with more elbow bend the faster you go. Arm swing gives way while attacking, guarding, carrying or pushing.
-  - **What you see.** While calm, the skin shows the animation for legs and pelvis, so planted feet stay planted (the physics chain lags fast steps by a few centimetres), and a 50/50 blend for the upper body. A weakened (hit) limb shows pure physics, so impacts still wobble.
+  - **What you see.** While calm, the skin shows the animation for legs and pelvis, so planted feet stay planted (the physics chain lags fast steps by a few centimetres), 80 % of it for the arms and half of it for the torso and head. A weakened (hit) limb shows pure physics, so impacts still wobble.
   - **Measuring it.** `tests/gait_probe.gd` prints foot slip, clearance, duty, cadence and pelvis height for stroll, walk and run.
 - **Foot IK** (in `ragdoll_rig.gd`, after FK) for grounded poses outside locomotion (getting up, sliding). Each foot raycasts down to the ground under it.
   - The pelvis drops for the lower foot.

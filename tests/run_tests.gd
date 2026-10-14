@@ -583,9 +583,11 @@ func test_gait_planted_feet() -> void:
 		var n := 0
 		var clear := 0.0
 		var lo := INF
+		var knee := INF
 		for i in int(1.5 / TICK):
 			await physics_frame
 			lo = minf(lo, player.rig.pelvis().global_position.y - player.global_position.y)
+			knee = minf(knee, minf(knee_bend("l"), knee_bend("r")))
 			for s: StringName in [&"l", &"r"]:
 				var p := player.rig.display_transform(player.rig.bones[StringName("foot_" + s)]).origin
 				if g.stance[s] > 0.2 and g.stance[s] < 0.5 and prev.has(s):
@@ -599,6 +601,24 @@ func test_gait_planted_feet() -> void:
 		check("%s: planted feet don't slide" % spec[0], n > 0 and slip < 0.1, "(%.3f m/s)" % slip)
 		check("%s: swinging feet clear the ground" % spec[0], clear > spec[3], "(%.2f m)" % clear)
 		check("%s: hips stay up (no lunging)" % spec[0], lo > 0.82, "(pelvis min %.2f m)" % lo)
+		check("%s: knees never bend backwards" % spec[0], knee > -0.01, "(worst %.3f m)" % knee)
+
+
+## How far the displayed knee sits in front of the hip-ankle line, along the foot's forward
+## direction (negative: the knee is bent backwards).
+func knee_bend(s: String) -> float:
+	var r := player.rig
+	var hip := r.display_transform(r.bones[StringName("thigh_" + s)]) * ((r.bones[StringName("thigh_" + s)] as PuppetBone).def.pivot - (r.bones[StringName("thigh_" + s)] as PuppetBone).def.center)
+	var shin: PuppetBone = r.bones[StringName("shin_" + s)]
+	var knee := r.display_transform(shin) * (shin.def.pivot - shin.def.center)
+	var foot: PuppetBone = r.bones[StringName("foot_" + s)]
+	var ft := r.display_transform(foot)
+	var ankle := ft * (foot.def.pivot - foot.def.center)
+	var dir := (ankle - hip).normalized()
+	var off := (knee - hip) - dir * (knee - hip).dot(dir)
+	var fwd := -ft.basis.z
+	fwd.y = 0.0
+	return off.dot(fwd.normalized())
 
 
 ## Stopping settles the feet under the hips; turning on the spot steps the feet round.
