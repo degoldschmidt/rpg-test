@@ -24,6 +24,21 @@ static var _loaded := false
 
 var idle: MocapClip
 var cycles: Array[MocapClip] = []   ## moving loops, slowest first
+## Transition clips (optional; found by name): stopping, a sprint start, turning round at speed.
+var stop_walk: MocapClip
+var stop_run: MocapClip
+var start_run: MocapClip
+var turn_run: MocapClip
+var transition := &""     ## current transition: &"stop", &"start", &"turn" or none
+var _tr: MocapClip
+var _tr_t := 0.0
+var _tr_w := 0.0
+var _tr_end := false
+var _tr_v0 := 0.0
+var _tr_face0 := 0.0
+var _tr_speed := PackedFloat32Array()   ## the transition clip's root speed per frame
+var _yaw_off := 0.0       ## turn transitions: the clip's turn so far minus the body's
+var _prev_v := 0.0
 var phase := 0.0          ## cycle phase 0..1, 0 = left touchdown
 var idle_t := 0.0
 var weight := 0.0         ## blend of the mocap feet over the animated legs (FootPlanner-compatible)
@@ -42,6 +57,7 @@ var _release := {&"l": 1.0, &"r": 1.0}   ## 0..1 blend from the released lock ba
 var _release_from := {}   ## side -> lock offset from the clip foot at lift-off
 var _prev_contact := {&"l": true, &"r": true}
 var _prev_vel_yaw := 0.0
+var _settle := {}         ## side -> {from: Transform3D, t: 0..1}: a small step to the idle stance
 var active := false
 
 
@@ -79,6 +95,21 @@ func set_library(lib: Dictionary) -> void:
 		else:
 			kept.append(c)
 	cycles = kept
+	stop_walk = _find(lib, ["stop", "walk"])
+	stop_run = _find(lib, ["run", "stop"])
+	start_run = _find(lib, ["idle to sprint"]) if _find(lib, ["idle to sprint"]) else _find(lib, ["run", "start"])
+	turn_run = _find(lib, ["running turn 180"])
+
+
+static func _find(lib: Dictionary, words: Array) -> MocapClip:
+	for k: String in lib:
+		var n := k.to_lower()
+		var ok := true
+		for w: String in words:
+			ok = ok and w in n
+		if ok and not (lib[k] as MocapClip).loop:
+			return lib[k]
+	return null
 
 
 ## A running gait has a flight phase (both feet off the ground for part of the cycle).
@@ -114,6 +145,7 @@ func update(c: Dictionary, dt: float) -> Dictionary:
 	if not active:
 		active = true
 		_lock.clear()
+		_settle.clear()
 		_prev_contact = {&"l": true, &"r": true}
 		_prev_vel_yaw = atan2(-vel.x, -vel.z) if v > 0.5 else float(c.get("facing", 0.0))
 	var vel_yaw := atan2(-vel.x, -vel.z) if v > 0.5 else float(c.get("facing", 0.0))
@@ -158,6 +190,16 @@ func update(c: Dictionary, dt: float) -> Dictionary:
 		if idle_w > 0.5:
 			pose.contact = {&"l": true, &"r": true}
 
+	pose = _transitions(c, pose, v, dt)
+	_prev_v = v
+	if absf(_yaw_off) > 0.001:
+		# Turning round: the body follows the clip's turn, ahead of (or behind) the capsule's facing.
+		var q := Quaternion(Vector3.UP, _yaw_off)
+		pose.root_rot = q * (pose.root_rot as Quaternion)
+		pose.root_offset = Basis(q) * (pose.root_offset as Vector3)
+		var fr: Dictionary = pose.feet
+		pose.feet = {&"l": Basis(q) * (fr[&"l"] as Vector3), &"r": Basis(q) * (fr[&"r"] as Vector3)}
+
 	# Feet: clip path relative to the moving root, locked while planted.
 	var pel := root.basis * Basis(pose.root_rot as Quaternion)
 	var bones: Dictionary = pose.bones
@@ -186,6 +228,7 @@ func update(c: Dictionary, dt: float) -> Dictionary:
 		if planted and _lock.has(s) and (_lock[s] as Vector3).distance_to(clip_pos) > 0.45:
 			_lock[s] = clip_pos   # far off the clip (turned round, pushed): re-plant
 			_lock_basis[s] = fb
+		var clip_fb := fb
 		if planted and _lock_basis.has(s):
 			# A planted foot keeps its orientation, except turning with the body (pivot on the spot).
 			var lb: Basis = _lock_basis[s]
@@ -200,6 +243,37 @@ func update(c: Dictionary, dt: float) -> Dictionary:
 			_release_from[s] = (_lock[s] as Vector3) - clip_pos
 			_release[s] = 0.0
 			_lock.erase(s)
+		# Standing still with a foot left out of place (after a stop, a turn on the spot): step it
+		# back under the body, one foot at a time.
+		var standing: bool = idle_w > 0.9 and transition == &"" and planted and _lock.has(s) and c.get("settle", true)
+		if standing and not _settle.has(s) and not _settle.has(_other(s)):
+			var off := Vector2((_lock[s] as Vector3).x - clip_pos.x, (_lock[s] as Vector3).z - clip_pos.z).length()
+			var twist := absf(wrapf(_yaw_of(clip_fb) - _yaw_of(_lock_basis[s]), -PI, PI))
+			var other_off := _lock_off(_other(s), root, pose)
+			if (off > 0.12 or twist > 0.4) and off >= other_off:
+				_settle[s] = {"from": Transform3D(_lock_basis[s], _lock[s]), "t": 0.0}
+		if _settle.has(s):
+			var st: Dictionary = _settle[s]
+			st.t = minf(float(st.t) + dt / 0.35, 1.0)
+			var u: float = st.t
+			var from: Transform3D = st.from
+			var e := smoothstep(0.0, 1.0, u)
+			var sp := from.origin.lerp(clip_pos, e) + Vector3.UP * 0.07 * sin(PI * u)
+			var sb := Basis(Quaternion(from.basis.orthonormalized()).slerp(Quaternion(clip_fb.orthonormalized()), e))
+			if u >= 1.0 or not standing:
+				_settle.erase(s)
+				if planted:
+					# Done (or cut short by moving off): plant where the foot got to.
+					_lock[s] = Vector3(sp.x, clip_pos.y, sp.z)
+					_lock_basis[s] = sb
+					_lock_t[s] = 0.0
+			else:
+				_prev_contact[s] = planted
+				lock_err[s] = Vector3.ZERO
+				stance[s] = -1.0
+				swing[s] = u
+				feet[s] = Transform3D(sb, sp)
+				continue
 		_prev_contact[s] = planted
 		var p := clip_pos
 		lock_err[s] = (_lock[s] as Vector3) - clip_pos if _lock.has(s) else Vector3.ZERO
@@ -218,9 +292,120 @@ func update(c: Dictionary, dt: float) -> Dictionary:
 	return {"bones": pose.bones, "root_rot": pose.root_rot, "root_offset": pose.root_offset}
 
 
+static func _other(s: StringName) -> StringName:
+	return &"r" if s == &"l" else &"l"
+
+
+## How far a locked foot sits from where the pose puts it (0 if it isn't locked).
+func _lock_off(s: StringName, root: Transform3D, pose: Dictionary) -> float:
+	if not _lock.has(s):
+		return 0.0
+	var cp := root * ((pose.feet as Dictionary)[s] as Vector3)
+	var lp: Vector3 = _lock[s]
+	return Vector2(lp.x - cp.x, lp.z - cp.z).length()
+
+
 static func _yaw_of(b: Basis) -> float:
 	var f := -b.z
 	return atan2(-f.x, -f.z)
+
+
+## Stops, sprint starts and turning round at speed play their transition clip over the cycles.
+## Clip time follows what the capsule actually does: stops along the clip's deceleration (by
+## the fraction of speed lost), starts along its acceleration, turns in real time with the body
+## following the clip's heading.
+func _transitions(c: Dictionary, pose: Dictionary, v: float, dt: float) -> Dictionary:
+	var wish: Vector3 = c.get("wish", Vector3.ZERO)
+	var wl := wish.length()
+	var facing: float = c.get("facing", 0.0)
+	if transition == &"":
+		if wl < 0.1 and v > 1.2 and v < _prev_v and (stop_walk or stop_run):
+			_begin(&"stop", stop_run if v > 3.0 and stop_run else (stop_walk if stop_walk else stop_run), v, facing)
+		elif c.get("skid", false) and v > 3.0 and turn_run:
+			_begin(&"turn", turn_run, v, facing)
+		elif _prev_v < 0.4 and wl > 0.5 and c.get("run", false) and start_run:
+			_begin(&"start", start_run, v, facing)
+	if transition == &"":
+		return pose
+	var len := _tr.length()
+	match transition:
+		&"stop":
+			if wl > 0.3:
+				_tr_end = true   # moving again: back to the cycles
+			var r := clampf(v / maxf(_tr_v0, 0.01), 0.0, 1.0)
+			var tt := _time_at_speed(r, true)
+			_tr_t = clampf(tt, _tr_t + dt * 0.4, _tr_t + dt * 2.0) if v > 0.05 else _tr_t + dt
+		&"start":
+			if wl < 0.1:
+				_tr_end = true
+			var peak := _peak_frame()
+			var r := clampf(v / maxf(_tr_speed[peak], 0.5) * 0.5, 0.0, 1.0)   # the clip ends slower than we run
+			var tt := _time_at_speed(r, false)
+			_tr_t = clampf(tt, _tr_t + dt * 0.6, _tr_t + dt * 1.6)
+			if _tr_t >= peak / _tr.fps:
+				_tr_end = true
+		&"turn":
+			_tr_t += dt
+			var clip_turn := wrapf(_tr.root_yaw[mini(int(_tr_t * _tr.fps), _tr.frames - 1)] - _tr.root_yaw[0], -PI, PI)
+			var body_turn := wrapf(facing - _tr_face0, -PI, PI)
+			_yaw_off = wrapf(clip_turn - body_turn, -PI, PI) * _tr_w
+	if _tr_t >= len - 0.02:
+		_tr_end = true
+	_tr_w = move_toward(_tr_w, 0.0 if _tr_end else 1.0, dt * (4.0 if _tr_end else 8.0))
+	if transition != &"turn" or _tr_end:
+		_yaw_off = move_toward(_yaw_off, 0.0, dt * 6.0) if transition == &"turn" else 0.0
+	if _tr_end and _tr_w <= 0.0:
+		transition = &""
+		_tr = null
+		_yaw_off = 0.0
+		return pose
+	var tp := _tr.sample(minf(_tr_t, len - 0.001))
+	var out := _blend(pose, tp, _tr_w)
+	return out
+
+
+func _begin(kind: StringName, clip: MocapClip, v: float, facing: float) -> void:
+	transition = kind
+	_tr = clip
+	_tr_end = false
+	_tr_w = 0.0
+	_tr_v0 = v
+	_tr_face0 = facing
+	_yaw_off = 0.0
+	_tr_speed = PackedFloat32Array()
+	_tr_speed.resize(clip.frames)
+	for f in clip.frames:
+		var a := maxi(f - 3, 0)
+		var b := mini(f + 3, clip.frames - 1)
+		_tr_speed[f] = (clip.root_pos[b] - clip.root_pos[a]).length() * clip.fps / maxf(b - a, 1)
+	_tr_t = 0.0
+	if kind == &"stop":
+		_tr_t = _peak_frame() / clip.fps   # from full speed on
+
+
+func _peak_frame() -> int:
+	var best := 0
+	var half := _tr.frames / 2 if transition == &"stop" else _tr.frames
+	for f in half:
+		if _tr_speed[f] > _tr_speed[best]:
+			best = f
+	return best
+
+
+## Clip time where its speed (relative to its peak) passes r: after the peak going down
+## (stops), before it going up (starts).
+func _time_at_speed(r: float, falling: bool) -> float:
+	var peak := _peak_frame()
+	var top := maxf(_tr_speed[peak], 0.01)
+	if falling:
+		for f in range(peak, _tr.frames):
+			if _tr_speed[f] / top <= r:
+				return f / _tr.fps
+		return _tr.length()
+	for f in range(0, peak + 1):
+		if _tr_speed[f] / top >= r:
+			return f / _tr.fps
+	return peak / _tr.fps
 
 
 ## Time in the clip for the shared phase (phase 0 = that clip's left touchdown).

@@ -1167,6 +1167,8 @@ func _update_puppet(dt: float) -> void:
 		"root": root_transform(),
 		"facing": facing_yaw,
 		"vel": velocity,
+		"wish": _wish_dir(),
+		"run": _in.get("run", false),
 		"grounded": is_on_floor(),
 		"space": get_world_3d().direct_space_state if rig.lod == CharacterLOD.Tier.FULL else null,
 	}

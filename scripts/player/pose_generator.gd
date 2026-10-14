@@ -293,9 +293,6 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	# the other grounded poses (getting up, sliding).
 	var stepping := mode in [&"ground", &"crouch", &"stumble", &"stagger"] and c.has("root")
 	var braking: float = 1.0 if c.get("skid", false) else clampf(-lean.y / 10.0, 0.0, 1.0)
-	gait.update({"grounded": stepping and c.get("grounded", true), "root": c.get("root", Transform3D()),
-		"facing": c.get("facing", 0.0), "vel": c.get("vel", Vector3.ZERO), "space": c.get("space"),
-		"crouch": c.get("crouch", 0.0), "brake": braking}, dt)
 	_root = c.get("root", Transform3D())
 	var v_now: Vector3 = c.get("vel", Vector3.ZERO)
 	# Bank into turns like a runner: lean = atan(v * turn rate / g), whole body over the feet.
@@ -308,10 +305,19 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	var clip_ok := use_mocap and loco.has_clips() and stepping
 	if clip_ok:
 		clip_pose = loco.update({"grounded": c.get("grounded", true) and mode == &"ground", "root": c.get("root", Transform3D()),
-			"facing": c.get("facing", 0.0), "vel": v_now, "space": c.get("space")}, dt)
+			"facing": c.get("facing", 0.0), "vel": v_now, "space": c.get("space"), "wish": c.get("wish", Vector3.ZERO),
+			"run": c.get("run", false), "skid": c.get("skid", false), "settle": atk.is_empty() and _attack_w < 0.01}, dt)
 	_clip_w = move_toward(_clip_w, 1.0 if not clip_pose.is_empty() else 0.0, dt * 6.0)
 	if clip_pose.is_empty() and _clip_w > 0.0:
 		_clip_w = 0.0   # left the ground: hand straight back to the procedural pose
+	# The procedural stepping only runs while it's (partly) in use; it restarts from the current
+	# stance when it's needed again.
+	if _clip_w < 1.0:
+		gait.update({"grounded": stepping and c.get("grounded", true), "root": c.get("root", Transform3D()),
+			"facing": c.get("facing", 0.0), "vel": c.get("vel", Vector3.ZERO), "space": c.get("space"),
+			"crouch": c.get("crouch", 0.0), "brake": braking}, dt)
+	else:
+		gait.reset()
 	var turn_now := loco.turn_rate if _clip_w > 0.5 else gait.turn_rate
 	var bank_t := clampf(atan(hv * clampf(turn_now, -3.5, 3.5) / 9.8), -0.35, 0.35) * smoothstep(2.0, 4.0, hv)
 	_bank = lerpf(_bank, bank_t if stepping else 0.0, 1.0 - exp(-6.0 * dt))

@@ -642,12 +642,12 @@ func knee_bend(s: String) -> float:
 ## Stopping settles the feet under the hips; turning on the spot steps the feet round.
 func test_gait_stop_and_turn() -> void:
 	print("gait: stop settles, turning steps")
-	var g: FootPlanner = player.pose_gen.gait
 	await place(open(), 0.4)
 	inp(Vector2(0, -1))
 	await seconds(1.5)
 	inp()
 	await seconds(2.0)
+	var g = steps()   # the mocap player when clips drive the legs, else the FootPlanner
 	var ok := true
 	for s: StringName in [&"l", &"r"]:
 		var side := -1.0 if s == &"l" else 1.0
@@ -655,7 +655,7 @@ func test_gait_stop_and_turn() -> void:
 		var p: Vector3 = (g.feet[s] as Transform3D).origin
 		ok = ok and Vector2(p.x - home.x, p.z - home.z).length() < 0.2 and g.stance[s] >= 0.0
 	check("after stopping, both feet are planted under the hips", ok)
-	var ph := g.phase
+	var ph: float = g.phase
 	await seconds(0.5)
 	check("standing still doesn't keep stepping", is_equal_approx(g.phase, ph))
 	player.facing_yaw += 1.4   # turn on the spot

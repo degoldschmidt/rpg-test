@@ -127,7 +127,8 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
   - **Getting clips.** Download them as described in `assets/animations/mixamo/README.md` and drop them in that folder. They stay out of git, since Mixamo's terms don't allow redistributing them.
   - **Import.** `MocapImporter` retargets them onto the puppet by world-space bone direction, so it doesn't depend on the source rig's bone axes or its T-pose. It extracts root motion (speed, heading) and foot contacts, and caches the result in `user://mocap_cache/`.
   - **Playback.** `LocomotionPlayer` blends the looping cycles (idle, walk, jog, run, sprint) by the capsule's speed. Cycles are phase-locked on the left-foot touchdown, and playback rate follows the actual speed.
-  - **Feet.** Planted feet are locked where they touched down and released back onto the clip's path at lift-off. The rig's leg IK places the legs.
+  - **Transitions.** Stopping, sprinting off from a standstill and turning round at a run play the matching clips ("Stop Walking" / "Run To Stop", "Idle To Sprint", "Running Turn 180"). Clips are found by name. A stop clip's time follows how much speed the capsule has lost, so the clip's braking lines up with the real deceleration. Without these clips, the cycles cover it.
+  - **Feet.** Planted feet are locked where they touched down and released back onto the clip's path at lift-off. The rig's leg IK places the legs. When standing with a foot out of place (after a stop, or turning on the spot), the feet take small steps back into the idle stance.
   - **Overlays.** Attacks, guard, carry and push take over the arms, and a kick takes the kicking leg. The turn bank goes on top.
   - **Fallback.** With no clips, everything runs procedurally as before. Tests use a synthetic Mixamo-like rig (`tests/mocap_fixture.gd`) with random bone axes, so the pipeline is tested in CI.
 - **Foot IK** (in `ragdoll_rig.gd`, after FK) for grounded poses outside locomotion (getting up, sliding). Each foot raycasts down to the ground under it.
@@ -237,7 +238,7 @@ See [docs/performance.md](docs/performance.md) for the benchmark (`tests/benchma
 - A budgeted LOD keeps only the nearest 5 characters fully simulated and the next 20 in a cheaper KINEMATIC tier; everyone else is PROXY_ONLY. Reduced tiers park their physics bodies and update at 30 Hz or 15 Hz, costing about 0.05 ms per character (7–9× cheaper).
 - Hits, strikes and being run into promote a character back to full simulation instantly.
 - **Crowd layer** (`scripts/crowd/`): NPCs as plain data drawn with chunked MultiMeshes and baked vertex animation. Only the 24 nearest become real characters, borrowed from a pool.
-- **Crowd test** (`tests/crowd.gd --npcs=N`): the player sprints through a crowd, knocking some NPCs over. Simulation FPS on this cloud CPU (no rendering): 1000 NPCs at 105 FPS on average (99th percentile 65 FPS), 10,000 at 55 FPS. With every NPC a full character (`--characters`), 100 NPCs run at 66 FPS.
+- **Crowd test** (`tests/crowd.gd --npcs=N`): the player sprints through a crowd, knocking some NPCs over. Simulation FPS on this cloud CPU (no rendering): 1000 NPCs at 105 FPS on average (99th percentile 65 FPS) with the procedural gait, 85 FPS with mocap clips, 10,000 at 55 FPS. With every NPC a full character (`--characters`), 100 NPCs run at 66 FPS.
 
 ## Watching it without playing
 
