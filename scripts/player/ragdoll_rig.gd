@@ -161,10 +161,12 @@ func step(dt: float, root: Transform3D, root_velocity: Vector3, pose: Dictionary
 		flat["foot_ik"] = 0.0
 		flat["hand_ik"] = 0.0
 		var kt := compute_targets(root, flat, dt)
+		var move_bodies := lod == CharacterLOD.Tier.KINEMATIC  # proxy-only: the skin reads targets
 		for d in defs:
 			var b: PuppetBone = bones[d.name]
 			b.target = kt[d.name]
-			b.global_transform = kt[d.name]
+			if move_bodies:
+				b.global_transform = kt[d.name]
 		_prev_target = kt
 		return
 	var targets := compute_targets(root, pose, dt)
@@ -347,6 +349,11 @@ func weaken(bone_name: StringName, amount: float) -> void:
 		_weak[bone_name] = clampf(amount, 0.0, 1.0)
 
 
+## Where a bone is shown: its body, or its animation target while proxy-only (bodies parked).
+func display_transform(b: PuppetBone) -> Transform3D:
+	return b.target if lod == CharacterLOD.Tier.PROXY_ONLY else b.global_transform
+
+
 func pelvis() -> PuppetBone:
 	return bones[&"pelvis"]
 
@@ -365,6 +372,8 @@ func set_lod(tier: int, velocity := Vector3.ZERO) -> void:
 		return
 	lod = tier
 	for b: PuppetBone in bones.values():
+		if tier != CharacterLOD.Tier.PROXY_ONLY:
+			b.global_transform = b.target  # bodies were left behind while proxy-only
 		match tier:
 			CharacterLOD.Tier.FULL:
 				b.collision_layer = InputSetup.LAYER_PUPPET

@@ -120,7 +120,7 @@ func set_tint(c: Color) -> void:
 ## Rebuilds every bone from the current puppet body transforms.
 func update_pose() -> void:
 	var pelvis: PuppetBone = _body[_root_bone]
-	var xs := Transform3D((MODEL_TO_RIG * Basis.from_scale(Vector3.ONE * _scale)), pelvis.global_position)
+	var xs := Transform3D((MODEL_TO_RIG * Basis.from_scale(Vector3.ONE * _scale)), _rig.display_transform(pelvis).origin)
 	skeleton.global_transform = xs
 	var xs_inv := xs.affine_inverse()
 	var rot_inv := MODEL_TO_RIG.inverse()
@@ -129,12 +129,13 @@ func update_pose() -> void:
 		var w := Transform3D()
 		if _body.has(b):
 			var body: PuppetBone = _body[b]
-			var bb := body.global_basis.orthonormalized()
+			var bt := _rig.display_transform(body)
+			var bb := bt.basis.orthonormalized()
 			w.basis = bb * (_aligned[b] as Basis)
 			if p < 0:
-				w.origin = body.global_position + bb * _root_offset
+				w.origin = bt.origin + bb * _root_offset
 			elif _pinned.has(b):
-				w.origin = body.global_transform * (_pinned[b] as Vector3)
+				w.origin = bt * (_pinned[b] as Vector3)
 			else:
 				w.origin = _world[p].origin + _world[p].basis * (_rest_local[b].origin * _scale)
 		elif p >= 0:

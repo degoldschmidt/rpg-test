@@ -1084,11 +1084,12 @@ func _update_puppet(dt: float) -> void:
 	var hands := _hand_targets()
 	ctx["hand_targets"] = hands
 	ctx.merge(combat.pose_ctx(), true)
-	if rig.lod == CharacterLOD.Tier.PROXY_ONLY:
-		# Far away: animate at a fraction of the tick rate.
+	if rig.lod != CharacterLOD.Tier.FULL:
+		# Reduced tiers animate at a fraction of the tick rate.
+		var stride := config.pose_stride if rig.lod == CharacterLOD.Tier.PROXY_ONLY else config.kinematic_stride
 		_stride += 1
 		_stride_dt += dt
-		if _stride % maxi(config.pose_stride, 1) != 0:
+		if _stride % maxi(stride, 1) != 0:
 			return
 		dt = _stride_dt
 	_stride_dt = 0.0

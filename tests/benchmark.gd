@@ -8,7 +8,7 @@ const WARMUP := 120
 const TICKS := 600
 
 var counts: Array = [1, 10, 25, 50, 100]
-var scenarios: Array = ["idle", "walk", "ragdoll"]
+var scenarios: Array = ["idle", "walk", "ragdoll", "walk_kinematic", "walk_proxy"]
 var out_path := ""
 var rows: Array = []
 
@@ -51,6 +51,9 @@ func _measure(scenario: String, n: int) -> Dictionary:
 	for i in n:
 		var c: PlayerController = PLAYER_SCENE.instantiate()
 		c.use_external_input = true
+		if scenario == "walk_kinematic" or scenario == "walk_proxy":
+			c.lod_enabled = true
+			c.lod_force = CharacterLOD.Tier.KINEMATIC if scenario == "walk_kinematic" else CharacterLOD.Tier.PROXY_ONLY
 		c.position = Vector3((i % side) * 4.0, 0, (i / side) * 4.0)
 		w.add_child(c)
 		chars.append(c)
@@ -88,7 +91,7 @@ func _drive(scenario: String, chars: Array[PlayerController], i: int) -> void:
 	for k in chars.size():
 		var c := chars[k]
 		match scenario:
-			"walk":
+			"walk", "walk_kinematic", "walk_proxy":
 				var a := i * 0.01 + k
 				c.external_input = {"move": Vector2(cos(a), sin(a))}
 			"ragdoll":

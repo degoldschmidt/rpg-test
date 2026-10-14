@@ -91,6 +91,7 @@ extends Resource
 @export var lod_full_range := 25.0       ## closer than this to the LOD focus: full active ragdoll
 @export var lod_kinematic_range := 60.0  ## closer than this: kinematic puppet; beyond: proxy only
 @export var pose_stride := 4             ## proxy-only tier animates every Nth tick
+@export var kinematic_stride := 2        ## kinematic tier animates every Nth tick
 @export var lod_update_interval := 0.25
 @export var lod_promote_hold := 3.0      ## stay FULL this long after a hit / ragdoll
 
