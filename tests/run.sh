@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 SUITE="${1:-full}"
 shift || true
 GODOT="${GODOT:-godot}"
-GROUPS_ALL=(core movement terrain objects combat)
+GROUPS_ALL=(core movement terrain objects combat anim)
 GROUPS_SEL=("${@:-${GROUPS_ALL[@]}}")
 if [ "$#" -eq 0 ]; then GROUPS_SEL=("${GROUPS_ALL[@]}"); fi
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"

@@ -43,6 +43,9 @@ const TESTS := [
 	["test_gait_stop_and_turn", "movement", false],
 	["test_gait_arms_contralateral", "movement", true],
 	["test_gait_turns", "movement", false],
+	["test_mocap_import", "anim", true],
+	["test_mocap_locomotion", "anim", true],
+	["test_mocap_fallback", "anim", false],
 	["test_walk_momentum", "movement", true],
 	["test_run_momentum", "movement", false],
 	["test_skid", "movement", false],
@@ -189,7 +192,9 @@ func foot_alignment(side: String) -> float:
 	var q := PhysicsRayQueryParameters3D.create(p + Vector3.UP * 0.5, p + Vector3.DOWN * 1.5,
 		InputSetup.LAYER_WORLD | InputSetup.LAYER_DETAIL)
 	var hit := player.get_world_3d().direct_space_state.intersect_ray(q)
-	return foot.global_basis.y.normalized().dot(hit.normal) if hit else 0.0
+	# The displayed foot (what the skin shows; with mocap, calm legs show their animation).
+	var shown := player.rig.display_transform(foot as PuppetBone).basis
+	return shown.y.normalized().dot(hit.normal) if hit else 0.0
 
 
 func open() -> Vector3:
@@ -572,10 +577,19 @@ func test_crowd_layer() -> void:
 	await physics_frame
 
 
+## Whatever drives the legs: the mocap LocomotionPlayer (when clips are installed) or the
+## procedural FootPlanner. Both expose stance / swing / feet per side.
+func steps():
+	return player.pose_gen.loco if player.pose_gen._clip_w > 0.5 else player.pose_gen.gait
+
+
+func mocap_on() -> bool:
+	return player.pose_gen._clip_w > 0.5
+
+
 ## Planted feet don't slide, swinging feet clear the ground, at stroll / walk / run.
 func test_gait_planted_feet() -> void:
 	print("gait: planted feet, swing clearance")
-	var g: FootPlanner = player.pose_gen.gait
 	for spec in [["stroll", 0.45, false, 0.08], ["walk", 1.0, false, 0.15], ["run", 1.0, true, 0.3]]:
 		await place(open(), 0.4)
 		inp(Vector2(0, -spec[1]), spec[2])
@@ -586,6 +600,7 @@ func test_gait_planted_feet() -> void:
 		var clear := 0.0
 		var lo := INF
 		var knee := INF
+		var g = steps()
 		for i in int(1.5 / TICK):
 			await physics_frame
 			lo = minf(lo, player.rig.pelvis().global_position.y - player.global_position.y)
@@ -618,7 +633,8 @@ func knee_bend(s: String) -> float:
 	var ankle := ft * (foot.def.pivot - foot.def.center)
 	var dir := (ankle - hip).normalized()
 	var off := (knee - hip) - dir * (knee - hip).dot(dir)
-	var fwd := -ft.basis.z
+	# Forward = where the hips face (a swinging foot may point down or back, e.g. sprinting).
+	var fwd := -r.display_transform(r.pelvis()).basis.z
 	fwd.y = 0.0
 	return off.dot(fwd.normalized())
 
@@ -626,12 +642,12 @@ func knee_bend(s: String) -> float:
 ## Stopping settles the feet under the hips; turning on the spot steps the feet round.
 func test_gait_stop_and_turn() -> void:
 	print("gait: stop settles, turning steps")
-	var g: FootPlanner = player.pose_gen.gait
 	await place(open(), 0.4)
 	inp(Vector2(0, -1))
 	await seconds(1.5)
 	inp()
 	await seconds(2.0)
+	var g = steps()   # the mocap player when clips drive the legs, else the FootPlanner
 	var ok := true
 	for s: StringName in [&"l", &"r"]:
 		var side := -1.0 if s == &"l" else 1.0
@@ -639,7 +655,7 @@ func test_gait_stop_and_turn() -> void:
 		var p: Vector3 = (g.feet[s] as Transform3D).origin
 		ok = ok and Vector2(p.x - home.x, p.z - home.z).length() < 0.2 and g.stance[s] >= 0.0
 	check("after stopping, both feet are planted under the hips", ok)
-	var ph := g.phase
+	var ph: float = g.phase
 	await seconds(0.5)
 	check("standing still doesn't keep stepping", is_equal_approx(g.phase, ph))
 	player.facing_yaw += 1.4   # turn on the spot
@@ -690,7 +706,8 @@ func test_gait_arms_contralateral() -> void:
 		inp()
 		var cl := correlation(arm_l, legs)
 		var cr := correlation(arm_r, legs)
-		check("%s: left arm swings with the right leg, right arm with the left" % spec[0], cl > 0.7 and cr < -0.7,
+		var need := 0.45 if mocap_on() else 0.7   # mocap arm swing is looser than the procedural one
+		check("%s: left arm swings with the right leg, right arm with the left" % spec[0], cl > need and cr < -need,
 			"(left arm vs right-left legs %.2f, right arm %.2f)" % [cl, cr])
 
 
@@ -698,10 +715,10 @@ func test_gait_arms_contralateral() -> void:
 ## leans into the turns, knees keep bending forward.
 func test_gait_turns() -> void:
 	print("gait: slalom and turn-around")
-	var g: FootPlanner = player.pose_gen.gait
 	await place(open() + Vector3(0, 0, 20), 0.4)
 	inp(Vector2(0, -1), true)
 	await seconds(1.5)
+	var g = steps()
 	var cross := -INF
 	var twist := 0.0
 	var knee := INF
@@ -738,6 +755,96 @@ func test_gait_turns() -> void:
 	check("planted feet stay under the body's heading (no twisted legs)", rad_to_deg(twist) < 60.0, "(worst %.0f°)" % rad_to_deg(twist))
 	check("the body leans into the turns", bank_n > 0 and bank_ok > 0.9 * bank_n, "(%d of %d ticks)" % [bank_ok, bank_n])
 	check("knees keep bending forward through the turns", knee > -0.01, "(worst %.3f m)" % knee)
+
+
+## Mixamo-like clips built in memory (CI has no Mixamo files): see tests/mocap_fixture.gd.
+func fixture_library() -> Dictionary:
+	var lib := {}
+	for kind in ["idle", "walk", "run"]:
+		var sc := MocapFixture.make_scene(kind, 3)
+		lib[kind] = MocapImporter.import_scene(sc, kind, true)
+		sc.free()
+	return lib
+
+
+func use_clips(lib) -> void:
+	LocomotionPlayer.library_override = lib
+	player.pose_gen.loco = null   # rebuilt from the new library on the next tick
+
+
+func test_mocap_import() -> void:
+	print("mocap import: retarget a Mixamo-like rig (T-pose, cm, arbitrary bone axes)")
+	var lib := fixture_library()
+	var walk: MocapClip = lib.walk
+	var idle: MocapClip = lib.idle
+	check("bone names and tracks found, clip imported", walk != null and walk.frames > 30)
+	check("root motion: walking speed scaled to the puppet", absf(walk.speed - 1.27) < 0.08 and idle.speed < 0.05,
+		"(walk %.2f m/s, idle %.2f)" % [walk.speed, idle.speed])
+	var cl := 0
+	var cr := 0
+	var both_air := 0
+	for f in walk.frames:
+		cl += walk.support_l[f]
+		cr += walk.support_r[f]
+		if walk.support_l[f] == 0 and walk.support_r[f] == 0:
+			both_air += 1
+	check("foot contacts found, alternating with double support",
+		cl > walk.frames * 0.45 and cr > walk.frames * 0.45 and both_air == 0 and walk.touchdown_l >= 0,
+		"(left %d, right %d of %d frames, both up %d)" % [cl, cr, walk.frames, both_air])
+	var s := walk.sample(0.3)
+	var chest := Basis(s.root_rot) * Basis(s.bones[&"spine"]) * Basis(s.bones[&"chest"])
+	var arm_dir := chest * Basis(s.bones[&"upper_arm_l"]) * Vector3.DOWN
+	check("arms hang down after retargeting from the T-pose", arm_dir.y < -0.85, "(arm direction %s)" % arm_dir)
+	var ft := walk.sample(0.0).feet as Dictionary
+	check("feet sit at ankle height on the ground", absf((ft[&"l"] as Vector3).y - 0.08) < 0.04, "(left ankle %.3f m)" % (ft[&"l"] as Vector3).y)
+
+
+func test_mocap_locomotion() -> void:
+	print("mocap locomotion: clips drive the puppet, feet locked while planted")
+	use_clips(fixture_library())
+	for spec in [["walk", 0.45, false], ["jog", 1.0, false]]:
+		await place(open(), 0.4)
+		inp(Vector2(0, -spec[1]), spec[2])
+		await seconds(1.5 if quick else 2.0)
+		var L: LocomotionPlayer = player.pose_gen.loco
+		var prev := {}
+		var slip := 0.0
+		var n := 0
+		var knee := INF
+		var arm_l := []
+		var legs := []
+		for i in int(1.5 / TICK):
+			await physics_frame
+			knee = minf(knee, minf(knee_bend("l"), knee_bend("r")))
+			arm_l.append(segment_pitch(&"upper_arm_l"))
+			legs.append(segment_pitch(&"thigh_r") - segment_pitch(&"thigh_l"))
+			for s: StringName in [&"l", &"r"]:
+				var q := player.rig.display_transform(player.rig.bones[StringName("foot_" + s)]).origin
+				if L.stance[s] > 0.1 and L.stance[s] < 0.6 and prev.has(s):
+					slip += Vector2(q.x - prev[s].x, q.z - prev[s].z).length() / TICK
+					n += 1
+				prev[s] = q
+		inp()
+		check("%s: driven by the clips" % spec[0], player.pose_gen._clip_w > 0.99)
+		check("%s: planted feet don't slide" % spec[0], n > 0 and slip / n < 0.05, "(%.3f m/s)" % (slip / maxf(n, 1)))
+		check("%s: knees bend forward" % spec[0], knee > -0.01, "(worst %.3f m)" % knee)
+		check("%s: arms swing against the legs (from the clip)" % spec[0], correlation(arm_l, legs) > 0.5,
+			"(%.2f)" % correlation(arm_l, legs))
+	await place(open(), 1.0)
+	check("standing: both feet planted, clips still in charge", player.pose_gen._clip_w > 0.99
+		and player.pose_gen.loco.stance[&"l"] >= 0.0 and player.pose_gen.loco.stance[&"r"] >= 0.0)
+	use_clips(null)
+
+
+func test_mocap_fallback() -> void:
+	print("mocap fallback: no clips -> procedural locomotion")
+	use_clips({})
+	await place(open(), 0.4)
+	inp(Vector2(0, -1))
+	await seconds(1.5)
+	inp()
+	check("without clips the procedural gait runs", player.pose_gen._clip_w == 0.0 and player.pose_gen.gait.weight > 0.9)
+	use_clips(null)
 
 
 func test_run_into_npc() -> void:

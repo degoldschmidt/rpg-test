@@ -1167,6 +1167,8 @@ func _update_puppet(dt: float) -> void:
 		"root": root_transform(),
 		"facing": facing_yaw,
 		"vel": velocity,
+		"wish": _wish_dir(),
+		"run": _in.get("run", false),
 		"grounded": is_on_floor(),
 		"space": get_world_3d().direct_space_state if rig.lod == CharacterLOD.Tier.FULL else null,
 	}
@@ -1213,4 +1215,6 @@ func teleport(pos: Vector3, yaw := 0.0) -> void:
 	state_time = 0.0
 	rig.muscle = 1.0
 	pose_gen.gait.reset()
+	if pose_gen.loco:
+		pose_gen.loco.reset()
 	rig.teleport(root_transform())

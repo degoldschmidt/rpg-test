@@ -14,6 +14,11 @@ const BONES: Array[StringName] = [
 var time := 0.0
 ## Foot placement for every grounded mode: planted feet, swing arcs, step phase.
 var gait := FootPlanner.new()
+## Mocap locomotion (Mixamo clips in assets/animations/mixamo) when available; else procedural.
+static var use_mocap := true
+var loco: LocomotionPlayer
+var _clip_w := 0.0       ## 0 procedural .. 1 mocap ground locomotion
+var _attack_w := 0.0
 var _kick_w := 0.0
 var _arms_free := 1.0   ## arm swing and torso twist give way while the arms are busy
 var _root := Transform3D()
@@ -288,18 +293,37 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	# the other grounded poses (getting up, sliding).
 	var stepping := mode in [&"ground", &"crouch", &"stumble", &"stagger"] and c.has("root")
 	var braking: float = 1.0 if c.get("skid", false) else clampf(-lean.y / 10.0, 0.0, 1.0)
-	gait.update({"grounded": stepping and c.get("grounded", true), "root": c.get("root", Transform3D()),
-		"facing": c.get("facing", 0.0), "vel": c.get("vel", Vector3.ZERO), "space": c.get("space"),
-		"crouch": c.get("crouch", 0.0), "brake": braking}, dt)
 	_root = c.get("root", Transform3D())
 	var v_now: Vector3 = c.get("vel", Vector3.ZERO)
 	# Bank into turns like a runner: lean = atan(v * turn rate / g), whole body over the feet.
 	# (Only for real turning at speed: reversing through a standstill flips the velocity's heading.)
 	var hv := Vector2(v_now.x, v_now.z).length()
-	var bank_t := clampf(atan(hv * clampf(gait.turn_rate, -3.5, 3.5) / 9.8), -0.35, 0.35) * smoothstep(2.0, 4.0, hv)
+	# Mocap ground locomotion: plain ground mode only (crouch, stumble etc. stay procedural).
+	if use_mocap and loco == null:
+		loco = LocomotionPlayer.new()
+	var clip_pose := {}
+	var clip_ok := use_mocap and loco.has_clips() and stepping
+	if clip_ok:
+		clip_pose = loco.update({"grounded": c.get("grounded", true) and mode == &"ground", "root": c.get("root", Transform3D()),
+			"facing": c.get("facing", 0.0), "vel": v_now, "space": c.get("space"), "wish": c.get("wish", Vector3.ZERO),
+			"run": c.get("run", false), "skid": c.get("skid", false), "settle": atk.is_empty() and _attack_w < 0.01}, dt)
+	_clip_w = move_toward(_clip_w, 1.0 if not clip_pose.is_empty() else 0.0, dt * 6.0)
+	if clip_pose.is_empty() and _clip_w > 0.0:
+		_clip_w = 0.0   # left the ground: hand straight back to the procedural pose
+	# The procedural stepping only runs while it's (partly) in use; it restarts from the current
+	# stance when it's needed again.
+	if _clip_w < 1.0:
+		gait.update({"grounded": stepping and c.get("grounded", true), "root": c.get("root", Transform3D()),
+			"facing": c.get("facing", 0.0), "vel": c.get("vel", Vector3.ZERO), "space": c.get("space"),
+			"crouch": c.get("crouch", 0.0), "brake": braking}, dt)
+	else:
+		gait.reset()
+	var turn_now := loco.turn_rate if _clip_w > 0.5 else gait.turn_rate
+	var bank_t := clampf(atan(hv * clampf(turn_now, -3.5, 3.5) / 9.8), -0.35, 0.35) * smoothstep(2.0, 4.0, hv)
 	_bank = lerpf(_bank, bank_t if stepping else 0.0, 1.0 - exp(-6.0 * dt))
 	var gw := gait.weight
 	_kick_w = move_toward(_kick_w, 1.0 if atk.get("kind", &"") == &"kick" else 0.0, dt * 8.0)
+	_attack_w = move_toward(_attack_w, 0.0 if atk.is_empty() else 1.0, dt * 12.0)
 	var busy: bool = not atk.is_empty() or c.get("guard", false) or arm_mode != &"" or not hand_targets.is_empty() \
 		or mode == &"stagger"
 	_arms_free = move_toward(_arms_free, 0.0 if busy else 1.0, dt * (12.0 if busy else 3.0))
@@ -321,11 +345,42 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 		_root_off = _root_off.lerp(off, k)
 	var out := {"bones": _cur, "root_rot": _root_rot, "root_offset": _root_off, "foot_ik": _ik_w * (1.0 - gw),
 		"hand_ik": _hand_w if not hand_targets.is_empty() else 0.0, "hand_targets": hand_targets}
+	if _clip_w > 0.001 and not clip_pose.is_empty():
+		_apply_clip(out, clip_pose, _clip_w)
+		out["feet"] = gait.feet if _clip_w < 0.5 else loco.feet
+		out["feet_w"] = {&"l": loco.weight, &"r": loco.weight * (1.0 - _kick_w)}
+		out["foot_ik"] = 0.0
+		out["fk_knees"] = _clip_w >= 0.5
+		return out
 	if gw > 0.001:
 		_add_gait_motion(out, gw, dt)
 		out["feet"] = gait.feet
 		out["feet_w"] = {&"l": gw, &"r": gw * (1.0 - _kick_w)}
 	return out
+
+
+## Mocap pose under the procedural overlays: the clip owns the body except where an action does
+## (arms while attacking / guarding / carrying, the kicking leg), and the turn bank goes on top.
+func _apply_clip(out: Dictionary, clip: Dictionary, w: float) -> void:
+	var proc: Dictionary = out.bones
+	var cb: Dictionary = clip.bones
+	var bones := {}
+	var arms_proc := 1.0 - _arms_free
+	var attacking := _attack_w
+	for b in BONES:
+		var own := 0.0
+		if String(b).begins_with("upper_arm") or String(b).begins_with("forearm") or String(b).begins_with("hand"):
+			own = arms_proc
+		elif b == &"chest" or b == &"spine" or b == &"head":
+			own = maxf(arms_proc * 0.6, attacking)   # strikes are thrown from the torso
+		elif b in [&"thigh_r", &"shin_r", &"foot_r"]:
+			own = _kick_w
+		bones[b] = (cb[b] as Quaternion).slerp(proc[b], maxf(1.0 - w, own))
+	out.bones = bones
+	# A strike also owns the hips (it is thrown from the stance, not from the idle sway).
+	var root_proc := maxf(1.0 - w, _attack_w)
+	out.root_rot = (clip.root_rot as Quaternion).slerp(out.root_rot, root_proc) * Quaternion.from_euler(Vector3(0, 0, _bank * w))
+	out.root_offset = (clip.root_offset as Vector3).lerp(out.root_offset, root_proc) + Vector3(-sin(_bank * w) * 0.95, 0, 0)
 
 
 ## Pelvis, torso and arm motion that goes with the steps, layered on top of the smoothed pose

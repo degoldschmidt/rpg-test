@@ -227,3 +227,7 @@ export_presets.cfg
 # Local tool downloads and run output
 .tools/
 out/
+
+# Mixamo clips may not be redistributed: keep them local (see assets/animations/mixamo/README.md)
+assets/animations/mixamo/*
+!assets/animations/mixamo/README.md
