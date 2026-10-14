@@ -123,6 +123,13 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
   - **Upper body.** The step phase drives a weight shift over the stance foot and a hip drop on the swing side (walking), and a bounce and forward lean (running). Arms and torso twist follow the legs themselves, the thighs' forward swing computed from the planned feet, so they are always contralateral: left arm forward while the right leg is forward, hips turning with the forward leg and shoulders counter-rotating, at any gait or turn. Elbows bend more the faster you go, and arm swing gives way while attacking, guarding, carrying or pushing.
   - **What you see.** While calm, the skin shows the animation for legs and pelvis, so planted feet stay planted (the physics chain lags fast steps by a few centimetres), 80 % of it for the arms and half of it for the torso and head. A weakened (hit) limb shows pure physics, so impacts still wobble.
   - **Measuring it.** `tests/gait_probe.gd` prints foot slip, clearance, duty, cadence and pelvis height for stroll, walk and run.
+- **Mocap locomotion** (`scripts/anim/`): Mixamo clips can drive ground locomotion instead of the procedural gait.
+  - **Getting clips.** Download them as described in `assets/animations/mixamo/README.md` and drop them in that folder. They stay out of git, since Mixamo's terms don't allow redistributing them.
+  - **Import.** `MocapImporter` retargets them onto the puppet by world-space bone direction, so it doesn't depend on the source rig's bone axes or its T-pose. It extracts root motion (speed, heading) and foot contacts, and caches the result in `user://mocap_cache/`.
+  - **Playback.** `LocomotionPlayer` blends the looping cycles (idle, walk, jog, run, sprint) by the capsule's speed. Cycles are phase-locked on the left-foot touchdown, and playback rate follows the actual speed.
+  - **Feet.** Planted feet are locked where they touched down and released back onto the clip's path at lift-off. The rig's leg IK places the legs.
+  - **Overlays.** Attacks, guard, carry and push take over the arms, and a kick takes the kicking leg. The turn bank goes on top.
+  - **Fallback.** With no clips, everything runs procedurally as before. Tests use a synthetic Mixamo-like rig (`tests/mocap_fixture.gd`) with random bone axes, so the pipeline is tested in CI.
 - **Foot IK** (in `ragdoll_rig.gd`, after FK) for grounded poses outside locomotion (getting up, sliding). Each foot raycasts down to the ground under it.
   - The pelvis drops for the lower foot.
   - An analytic two-bone IK re-aims thigh and shin so each ankle lands at its own ground height, keeping the knee's bend direction.
@@ -209,6 +216,7 @@ The suite has 151 deterministic gameplay checks. It covers:
 - combat: punch flinch with physical recoil, punch combo stagger, kick stagger and knock-back, knockdown with a run-up or on a staggered or airborne target, get-up afterwards, guard blocking from the front but not from behind, kicks breaking guard, the sparring dummy hitting the player and the player's guard blocking it, kicks hitting the bag harder than punches, no attacks while carrying
 - objects: lift, carry while running, throw, drop, push and pull the crate, the heavier block being slower, the monolith being too heavy
 - ledges: ground, running and mid-air mantles; grab, hang height and hand placement; shimmy and stopping at the ledge end; climbing up; dropping off without re-grabbing; out-of-reach walls
+- mocap: importing a Mixamo-like rig (root motion, foot contacts, arms down from the T-pose, ankle height), clip-driven walk and jog with locked feet, forward knees and contralateral arms, standing, and the procedural fallback without clips
 - gait: arms swing contralaterally to the legs (walk, jog, run); in a slalom and a turn-around at speed the feet don't cross, planted feet stay under the body's heading, the body leans into the turns and the knees keep bending forward
 - gait: planted feet don't slide, swinging feet clear the ground and the hips stay up at stroll, walk and run; stopping settles both feet under the hips and then stops stepping; turning on the spot steps the feet round
 - foot IK on a 30° slope and on stairs (feet on the surface and tilted to it, pelvis drop, stair climb without sinking)
@@ -249,6 +257,8 @@ scripts/input_setup.gd             input actions (keyboard + gamepad), layer con
 scripts/player/player_controller.gd  movement + state machine
 scripts/player/pose_generator.gd     procedural poses (crouch, slide, air, roll, get-up) + gait body motion
 scripts/player/foot_planner.gd       locomotion: planted feet, swing arcs, cadence / stride / duty by speed
+scripts/anim/mocap_importer.gd       Mixamo FBX -> MocapClip (retarget, root motion, foot contacts)
+scripts/anim/locomotion_player.gd    clip blending by speed, phase sync, foot locking
 scripts/player/ragdoll_rig.gd        builds the puppet, FK targets, muscles, hit handling
 scripts/player/puppet_bone.gd        per-body drive + contact hit detection
 scripts/player/bone_def.gd           humanoid definition

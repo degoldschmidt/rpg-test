@@ -1213,4 +1213,6 @@ func teleport(pos: Vector3, yaw := 0.0) -> void:
 	state_time = 0.0
 	rig.muscle = 1.0
 	pose_gen.gait.reset()
+	if pose_gen.loco:
+		pose_gen.loco.reset()
 	rig.teleport(root_transform())
