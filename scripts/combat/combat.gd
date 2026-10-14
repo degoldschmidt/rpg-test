@@ -33,6 +33,7 @@ func setup(owner_body: PlayerController) -> void:
 	body = owner_body
 	for b: PuppetBone in body.rig.bones.values():
 		_exclude.append(b.get_rid())
+	_exclude.append(body.get_rid())
 
 
 static func attack_total(kind: StringName) -> float:
@@ -124,6 +125,12 @@ func _query_hits() -> void:
 	results.append_array(_sphere_hits((body.rig.bones[limb.def.parent] as PuppetBone).global_position))
 	for r in results:
 		var col: Object = r.collider
+		if col is PlayerController:
+			# A reduced-LOD character has parked bodies: wake it so the strike connects next tick.
+			var pc := col as PlayerController
+			if pc.rig.lod != CharacterLOD.Tier.FULL:
+				pc.promote_lod()
+			continue
 		if col is PuppetBone:
 			var target := (col as PuppetBone).rig.get_parent() as PlayerController
 			if target == null or target == body or target in _hit_targets:
@@ -152,7 +159,7 @@ func _sphere_hits(at: Vector3) -> Array:
 	var params := PhysicsShapeQueryParameters3D.new()
 	params.shape = sh
 	params.transform = Transform3D(Basis(), at)
-	params.collision_mask = InputSetup.LAYER_PUPPET | InputSetup.LAYER_PROPS
+	params.collision_mask = InputSetup.LAYER_PUPPET | InputSetup.LAYER_PROPS | InputSetup.LAYER_PROXY
 	params.exclude = _exclude
 	return body.get_world_3d().direct_space_state.intersect_shape(params, 16)
 
@@ -227,6 +234,11 @@ static func _region(bone: StringName) -> StringName:
 	if n.begins_with("thigh") or n.begins_with("shin") or n.begins_with("foot"):
 		return &"leg"
 	return &"torso"
+
+
+## Reactions caused outside melee (being run into), reported like hits.
+func react_external(kind: StringName, s: float) -> void:
+	_react(kind, s)
 
 
 func _react(kind: StringName, s: float) -> void:

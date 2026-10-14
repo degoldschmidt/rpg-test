@@ -4,7 +4,7 @@ extends Node
 ## PASSIVE stands still, GUARD holds guard facing the target, SPARRING closes in and
 ## alternates punch and kick on a fixed rhythm, guarding when the target winds up.
 
-enum Mode { PASSIVE, GUARD, SPARRING }
+enum Mode { PASSIVE, GUARD, SPARRING, WANDER }
 
 @export var mode: Mode = Mode.PASSIVE
 @export var engage_range := 6.0
@@ -16,6 +16,13 @@ var target: PlayerController
 var body: PlayerController
 var _t := 0.0
 var _next_kick := false
+var _rng := RandomNumberGenerator.new()
+var _wander_dir := Vector2.ZERO
+var _wander_t := 0.0
+var _home := Vector3.ZERO
+var _wander_acc := 0.0
+@export var wander_seed := 0
+@export var wander_radius := 6.0
 
 
 func _ready() -> void:
@@ -25,6 +32,16 @@ func _ready() -> void:
 
 func _physics_process(dt: float) -> void:
 	if body == null:
+		return
+	if mode == Mode.WANDER:
+		# Think only when the body acts this tick (reduced LOD tiers skip ticks).
+		_wander_acc += dt
+		if not body.ticks_this_frame():
+			return
+		var inp := {}
+		_wander(_wander_acc, inp)
+		_wander_acc = 0.0
+		body.external_input = inp
 		return
 	var inp := {}
 	body.face_target = null
@@ -51,3 +68,24 @@ func _physics_process(dt: float) -> void:
 		else:
 			_t = attack_interval * 0.5
 	body.external_input = inp
+
+
+## Stroll in random directions around the spawn point, with pauses. Seeded, so runs repeat.
+func _wander(dt: float, inp: Dictionary) -> void:
+	if _wander_t == 0.0 and _home == Vector3.ZERO:
+		_rng.seed = wander_seed
+		_home = body.global_position
+		_wander_t = _rng.randf_range(0.0, 2.0)
+	_wander_t -= dt
+	if _wander_t <= 0.0:
+		_wander_t = _rng.randf_range(1.5, 4.0)
+		if _rng.randf() < 0.4:
+			_wander_dir = Vector2.ZERO
+		else:
+			var to_home := _home - body.global_position
+			var a := _rng.randf_range(0.0, TAU)
+			var d := Vector2(cos(a), sin(a))
+			if Vector2(to_home.x, to_home.z).length() > wander_radius:
+				d = Vector2(to_home.x, to_home.z).normalized()
+			_wander_dir = d * 0.45
+	inp["move"] = _wander_dir

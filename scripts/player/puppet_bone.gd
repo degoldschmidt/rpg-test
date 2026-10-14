@@ -13,6 +13,15 @@ var drive := 1.0   ## 0 = limp ragdoll, 1 = fully follows target
 
 
 func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
+	var t0 := Time.get_ticks_usec() if PlayerController.profile else 0
+	_drive(state)
+	if PlayerController.profile:
+		PlayerController.prof_add("drive", Time.get_ticks_usec() - t0)
+
+
+func _drive(state: PhysicsDirectBodyState3D) -> void:
+	if rig.lod != CharacterLOD.Tier.FULL:
+		return  # frozen and placed by the rig
 	_scan_contacts(state)
 	if drive <= 0.001:
 		return
