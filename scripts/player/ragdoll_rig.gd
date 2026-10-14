@@ -36,6 +36,9 @@ var pose_version := 0            ## bumped every step; the skin skips frames whe
 var _def: Dictionary = {}       ## StringName -> BoneDef
 var _ik_delta := {&"l": 0.0, &"r": 0.0}
 var _ik_normal := {&"l": Vector3.UP, &"r": Vector3.UP}
+var _leg_len := 0.0
+var _show_anim := {}     ## bone -> how much of the animation the skin shows (see display_transform)
+const LEG_BONES: Array[StringName] = [&"thigh_l", &"shin_l", &"foot_l", &"thigh_r", &"shin_r", &"foot_r"]
 
 
 func build(root: Transform3D, body_color: Color) -> void:
@@ -157,13 +160,17 @@ func _add_face(head: Node3D, r: float) -> void:
 func step(dt: float, root: Transform3D, root_velocity: Vector3, pose: Dictionary) -> void:
 	pose_version += 1
 	if lod != CharacterLOD.Tier.FULL:
-		# No physics and no IK raycasts: plain FK of the animation.
+		# No physics and no IK raycasts: FK of the animation, legs placed on the planned feet.
 		var kt := _fk(root, pose, 0.0)
+		if pose.has("feet"):
+			kt = _leg_ik(kt, root, pose)
 		for d in defs:
 			(bones[d.name] as PuppetBone).target = kt[d.name]  # bodies are parked; the skin reads targets
 		_prev_target = kt
 		return
 	var targets := compute_targets(root, pose, dt)
+	# Stepping legs hold their planted feet harder (the joints chain lags behind fast swings).
+	var leg_boost := 1.0 + 0.8 * float((pose.get("feet_w", {}) as Dictionary).get(&"l", 0.0))
 	for d in defs:
 		var b: PuppetBone = bones[d.name]
 		var t: Transform3D = targets[d.name]
@@ -174,15 +181,22 @@ func step(dt: float, root: Transform3D, root_velocity: Vector3, pose: Dictionary
 		b.target = t
 		b.target_velocity = tv
 		_weak[d.name] = minf(1.0, _weak[d.name] + weakness_recovery * dt)
-		b.drive = muscle * d.stiffness * _weak[d.name]
+		b.drive = muscle * d.stiffness * _weak[d.name] * (leg_boost if d.name in LEG_BONES else 1.0)
 	_prev_target = targets
 	_has_prev = true
+	var gw: float = (pose.get("feet_w", {}) as Dictionary).get(&"l", 0.0) * muscle
+	for d in defs:
+		var calm := smoothstep(0.6, 1.0, _weak[d.name])
+		var k := 1.0 if d.name in LEG_BONES or d.name == &"pelvis" else 0.5
+		_show_anim[d.name] = gw * calm * k
 
 
 ## Pose -> world targets: forward kinematics, then foot IK when the pose asks for it.
 ## dt = 0 snaps the IK smoothing.
 func compute_targets(root: Transform3D, pose: Dictionary, dt := 0.0) -> Dictionary:
 	var out := _fk(root, pose, 0.0)
+	if pose.has("feet"):
+		out = _leg_ik(out, root, pose)
 	var w: float = pose.get("foot_ik", 0.0)
 	var k := 1.0 if dt <= 0.0 else 1.0 - exp(-ik_smoothing * dt)
 	if w <= 0.001 or not is_inside_tree():
@@ -192,6 +206,45 @@ func compute_targets(root: Transform3D, pose: Dictionary, dt := 0.0) -> Dictiona
 	else:
 		out = _foot_ik(out, root, pose, w, k)
 	_hand_ik(out, root, pose)
+	return out
+
+
+## Legs onto the foot planner's ankle targets (see FootPlanner). The pelvis drops when a foot
+## would be out of reach (long strides, stepping down), which also gives the walk its natural
+## low point at double support.
+func _leg_ik(out: Dictionary, root: Transform3D, pose: Dictionary) -> Dictionary:
+	var feet: Dictionary = pose.feet
+	var fw: Dictionary = pose.get("feet_w", {})
+	if _leg_len <= 0.0:
+		_leg_len = (_def[&"shin_l"].pivot - _def[&"thigh_l"].pivot).length() \
+			+ (_def[&"foot_l"].pivot - _def[&"shin_l"].pivot).length()
+	var reach := _leg_len * 0.985
+	var drop := 0.0
+	for s: StringName in [&"l", &"r"]:
+		var w: float = fw.get(s, 0.0)
+		if w <= 0.001 or not feet.has(s):
+			continue
+		var hip := _pivot(out, StringName("thigh_" + s))
+		var ankle: Vector3 = (feet[s] as Transform3D).origin
+		var h := Vector2(hip.x - ankle.x, hip.z - ankle.z).length()
+		drop = maxf(drop, (hip.y - ankle.y - sqrt(maxf(reach * reach - h * h, 0.0))) * w)
+	if drop > 0.001:
+		# The whole FK chain hangs from the pelvis, so dropping it is a plain translation.
+		var shift := root.basis * Vector3.DOWN * minf(drop, 0.35)
+		for n: StringName in out:
+			var t: Transform3D = out[n]
+			out[n] = Transform3D(t.basis, t.origin + shift)
+	for s: StringName in [&"l", &"r"]:
+		var w: float = fw.get(s, 0.0)
+		if w <= 0.001 or not feet.has(s):
+			continue
+		var foot := StringName("foot_" + s)
+		var want: Transform3D = feet[s]
+		var fk_basis: Basis = (out[foot] as Transform3D).basis
+		var ankle := _pivot(out, foot).lerp(want.origin, w)
+		var b := Basis(fk_basis.get_rotation_quaternion().slerp(want.basis.get_rotation_quaternion(), w))
+		_solve_two_bone(out, StringName("thigh_" + s), StringName("shin_" + s), foot,
+			ankle, Quaternion(b * fk_basis.inverse()), root.basis * Vector3.FORWARD, false)
 	return out
 
 
@@ -374,8 +427,17 @@ func weaken(bone_name: StringName, amount: float) -> void:
 
 
 ## Where a bone is shown: its body, or its animation target while bodies are parked (reduced tiers).
+## Fully simulated, a calm character shows its animation for the legs and pelvis (planted feet
+## stay planted; the physics chain lags fast steps by a few cm) and half of it for the upper
+## body; a weakened (hit) limb shows pure physics, so impacts still wobble.
 func display_transform(b: PuppetBone) -> Transform3D:
-	return b.target if lod != CharacterLOD.Tier.FULL else b.global_transform
+	if lod != CharacterLOD.Tier.FULL:
+		return b.target
+	var w: float = _show_anim.get(b.def.name, 0.0)
+	if w <= 0.001:
+		return b.global_transform
+	var p := b.global_transform
+	return Transform3D(p.basis.orthonormalized().slerp(b.target.basis.orthonormalized(), w), p.origin.lerp(b.target.origin, w))
 
 
 func pelvis() -> PuppetBone:

@@ -2,7 +2,7 @@ extends SceneTree
 ## Scripted showcase clips for watching the prototype without playing it. Record one with:
 ##   xvfb-run godot --rendering-driver opengl3 --resolution 1280x720 --write-movie out.avi \
 ##     --fixed-fps 30 --path . -s tests/showcase.gd -- --clip=combat
-## Clips: movement, falls, terrain, ledges, objects, combat, hazards
+## Clips: locomotion, movement, gait, falls, terrain, ledges, objects, combat, hazards
 
 var main: Node3D
 var player: PlayerController
@@ -119,6 +119,87 @@ func clip_movement() -> void:
 	await secs(1.8)
 	idle()
 	await secs(1.0)
+
+
+## Drive along a world direction for `t` seconds while the camera eases to `cam_off` from the
+## character's facing (0 = behind, PI/2 = from its right, PI = in front).
+func drive(dir: Vector3, t: float, cam_off: float, extra := {}, cam_rate := 0.04) -> void:
+	for i in int(t * 120.0):
+		if dir == Vector3.ZERO:
+			idle(extra)
+		else:
+			go(dir, extra)
+		cam.yaw = lerp_angle(cam.yaw, player.facing_yaw + cam_off, cam_rate)
+		await physics_frame
+
+
+## Showcase of the foot-placement locomotion from changing angles.
+func clip_locomotion() -> void:
+	main.hud.get_child(0).visible = false   # debug stats
+	var o: Vector3 = main.markers.open + Vector3(10, 0, 30)
+	await spot(o, 0.0, 2.3, -0.12, 3.4)
+	say("Stroll: heel strike, planted feet, toe-off")
+	await drive(Vector3.FORWARD * 0.45, 3.5, 2.3)
+	say("Walk speeds up into a jog: flight phase, arms bend")
+	await drive(Vector3.FORWARD, 3.0, PI * 0.5)
+	say("Sprint (Shift): longer push-off, heel tucks up, forward lean")
+	await drive(Vector3.FORWARD, 3.0, PI * 0.5, {"run": true})
+	say("Stop: braking steps, feet settle under the hips")
+	await drive(Vector3.ZERO, 2.5, 2.0)
+	say("Turning on the spot: corrective steps")
+	await drive(Vector3.LEFT * 0.25, 0.25, 2.0)
+	await drive(Vector3.ZERO, 1.4, 2.0, {}, 0.0)
+	await drive(Vector3.BACK * 0.25, 0.25, 2.0, {}, 0.0)
+	await drive(Vector3.ZERO, 1.4, 2.0, {}, 0.0)
+	say("Slalom: lean into the turns, feet land where the body is heading")
+	var t0 := 0.0
+	for i in int(4.5 * 120.0):
+		var a := sin(t0 * 2.6) * 0.9
+		go(Vector3(sin(a), 0, -cos(a)), {"run": true})
+		cam.yaw = lerp_angle(cam.yaw, 0.0 + 0.35, 0.03)
+		t0 += 1.0 / 120.0
+		await physics_frame
+	say("Run, then turn around: plant and pivot")
+	await drive(Vector3.FORWARD, 1.0, 0.9, {"run": true})
+	await drive(Vector3.BACK, 2.5, 0.9, {}, 0.02)
+	await drive(Vector3.ZERO, 1.0, 0.9)
+	var st: Vector3 = main.markers.stairs
+	await spot(st + Vector3(0, 0, 2.5), 0.0, -1.0, -0.2, 4.0)
+	say("Stairs: each foot lands on a tread")
+	await drive(Vector3.FORWARD * 0.6, 4.0, -1.0, {}, 0.0)
+	await drive(Vector3.ZERO, 0.8, -1.0, {}, 0.0)
+	var r: Vector3 = main.markers.ramp_30
+	await spot(r + Vector3.UP * 0.05, PI, -1.6, -0.15, 4.0)
+	say("Down a 30° slope: feet tilt to the ground")
+	await drive(Vector3.BACK * 0.5, 3.0, -1.6, {}, 0.0)
+	await drive(Vector3.ZERO, 1.0, -1.6, {}, 0.0)
+
+
+## Side view on the legs: stroll, walk, run, stop, turns.
+func clip_gait() -> void:
+	var o: Vector3 = main.markers.open + Vector3(0, 0, 30)
+	await spot(o, 0.0, PI * 0.5, -0.12, 3.6)
+	var plan := [
+		["Stroll (half stick): heel strike, planted feet, toe-off", Vector3.FORWARD * 0.45, false, 3.5],
+		["Walk (full stick): jog with a flight phase", Vector3.FORWARD, false, 3.0],
+		["Run (Shift)", Vector3.FORWARD, true, 3.0],
+		["Stop: feet settle under the hips", Vector3.ZERO, false, 2.5],
+		["Walk off and turn around", Vector3.FORWARD * 0.6, false, 1.5],
+		["", Vector3.BACK * 0.6, false, 2.5],
+		["Run, hard turn", Vector3.BACK, true, 1.5],
+		["", Vector3.RIGHT, true, 2.0],
+		["", Vector3.ZERO, false, 2.0],
+	]
+	for step in plan:
+		if step[0] != "":
+			say(step[0])
+		for i in int(step[3] * 120.0):
+			if step[1] == Vector3.ZERO:
+				idle()
+			else:
+				go(step[1], {"run": step[2]})
+			cam.yaw = lerp_angle(cam.yaw, player.facing_yaw + PI * 0.5, 0.05)
+			await physics_frame
 
 
 func clip_falls() -> void:

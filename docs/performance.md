@@ -69,7 +69,7 @@ godot --rendering-driver opengl3 --resolution 1280x720 --write-movie crowd.avi -
 
 **Result** on the 4-core 2.1 GHz cloud VM, with no rendering (there's no GPU here):
 
-- average **13.2 ms per frame (76 FPS)**
+- average **13.2 ms per frame (76 FPS)**; 15.1 ms (66 FPS) with the foot-placement locomotion
 - 99th percentile 20.9 ms (48 FPS)
 - 90 % of frames within the 16.7 ms budget for 60 fps
 - tiers on average: 5 FULL, 20 KINEMATIC, 75 PROXY_ONLY
@@ -116,11 +116,13 @@ tools/crowd_mac.sh live --npcs=1000      # real time with rendering, on a Mac
 
 | NPCs | Average | 99th percentile | Crowd layer update | Real characters (avg) |
 |---|---|---|---|---|
-| 100 | 6.3 ms (159 FPS) | 10.9 ms (91 FPS) | 0.24 ms | 4.4 full, 14.6 kinematic |
-| 1000 | 8.4 ms (119 FPS) | 13.1 ms (76 FPS) | 1.6 ms | 4.8 full, 19.1 kinematic |
-| 10,000 | 16.5 ms (61 FPS) | 27.5 ms (36 FPS) | 9.6 ms | 4.8 full, 19.1 kinematic |
+| 100 | 7.9 ms (127 FPS) | 13.4 ms (75 FPS) | 0.25 ms | 4.4 full, 14.8 kinematic |
+| 1000 | 9.6 ms (105 FPS) | 15.3 ms (65 FPS) | 1.6 ms | 4.8 full, 19.1 kinematic |
+| 10,000 | 18.2 ms (55 FPS) | 30.4 ms (33 FPS) | 9.7 ms | 4.8 full, 19.1 kinematic |
 
-About 3.5 ms of every frame is the 24 real characters, about the same at any crowd size. The crowd layer costs about 1 µs per NPC per frame in GDScript. At 10,000 NPCs, that loop is the next thing to move to C++ (GDExtension) or a compute shader.
+These numbers include the foot-placement locomotion (planted feet, leg IK in every tier), which costs about 1.3 ms per frame over the old sine-wave gait for the 24 real characters. Before it: 159 / 119 / 61 FPS.
+
+About 5 ms of every frame is the 24 real characters, about the same at any crowd size. The crowd layer costs about 1 µs per NPC per frame in GDScript. At 10,000 NPCs, that loop is the next thing to move to C++ (GDExtension) or a compute shader.
 
 **Rendering:** 1000 NPCs × 1226 vertices is about 1.2 M vertices for the visible chunks. That's trivial for any GPU, but slow on this VM's software renderer (about 0.7 s per frame for the recorded video).
 

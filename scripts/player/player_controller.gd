@@ -1161,6 +1161,12 @@ func _update_puppet(dt: float) -> void:
 		"shimmy": _shimmy,
 		"arm_mode": &"push" if state == State.GRAB else (&"carry" if _carried else &""),
 		"push_amount": _push_amount,
+		# Foot placement
+		"root": root_transform(),
+		"facing": facing_yaw,
+		"vel": velocity,
+		"grounded": is_on_floor(),
+		"space": get_world_3d().direct_space_state if rig.lod == CharacterLOD.Tier.FULL else null,
 	}
 	var hands := _hand_targets()
 	ctx["hand_targets"] = hands
@@ -1204,4 +1210,5 @@ func teleport(pos: Vector3, yaw := 0.0) -> void:
 	state = State.IDLE
 	state_time = 0.0
 	rig.muscle = 1.0
+	pose_gen.gait.reset()
 	rig.teleport(root_transform())

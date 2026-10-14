@@ -83,7 +83,7 @@ PlayerController (CharacterBody3D capsule)   ← gameplay truth: input, momentum
   │  pose ctx (state, speed, phase, lean…)
   ▼
 PoseGenerator  → per-bone target rotations (procedural, no animation assets)
-  │
+  │   └ FootPlanner → planted feet + swing arcs (world ankle targets), step phase
   ▼
 RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limits)
                  forward kinematics turns the pose into world targets;
@@ -111,7 +111,17 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
   - Summed contact hits from props or hazards above `ragdoll_hit_threshold`. Hit strength is relative speed × mass.
   - `apply_hit(dv, point)`, used by the bumper and available for future combat.
 - **Get-up.** Once the body settles, the proxy snaps under the pelvis and muscles ramp back up to a crouch, then to standing.
-- **Foot IK** (in `ragdoll_rig.gd`, after FK). Each foot raycasts down to the ground under it.
+- **Locomotion: foot placement** (`scripts/player/foot_planner.gd`). Legs aren't animated by angles. Each foot is either *planted* (locked to a world position, so it never slides) or *swinging* along an arc to a landing spot.
+  - **Landing spot.** Predicted from the body's velocity and turn rate, so the foot lands under the hips half-way through its next stance. Turning, stopping and changing direction all come out of the same rule.
+  - **Speed.** Cadence, step length, duty factor and swing height follow speed. Walking keeps steps within what the legs can span and always has a foot down (double support). Above about 2 m/s (1.9–2.2 with hysteresis) the gait switches to a run with a flight phase: the foot lands closer in and pushes off further behind, and the heel tucks up in the swing (up to 0.5 m at a sprint).
+  - **Foot roll.** Feet roll heel-to-toe: a heel strike when walking, then the heel peels off and the foot pivots on the toe.
+  - **Standing still.** Feet stay planted. Turning on the spot or drifting triggers corrective steps until they're back under the hips.
+  - **Overreach.** A planted foot left far behind (turning around) steps right away instead of lunging.
+  - **Legs.** Placed by two-bone IK (`_leg_ik` in `ragdoll_rig.gd`). The pelvis drops when a foot would be out of reach, which also gives the walk its natural low point at double support.
+  - **Upper body.** The step phase drives a weight shift over the stance foot and a hip drop on the swing side (walking), a bounce and forward lean (running), hips turning with the forward leg and shoulders counter-rotating, and arms swinging against the legs with more elbow bend the faster you go. Arm swing gives way while attacking, guarding, carrying or pushing.
+  - **What you see.** While calm, the skin shows the animation for legs and pelvis, so planted feet stay planted (the physics chain lags fast steps by a few centimetres), and a 50/50 blend for the upper body. A weakened (hit) limb shows pure physics, so impacts still wobble.
+  - **Measuring it.** `tests/gait_probe.gd` prints foot slip, clearance, duty, cadence and pelvis height for stroll, walk and run.
+- **Foot IK** (in `ragdoll_rig.gd`, after FK) for grounded poses outside locomotion (getting up, sliding). Each foot raycasts down to the ground under it.
   - The pelvis drops for the lower foot.
   - An analytic two-bone IK re-aims thigh and shin so each ankle lands at its own ground height, keeping the knee's bend direction.
   - Each foot tilts to the surface normal.
@@ -197,6 +207,7 @@ The suite has 151 deterministic gameplay checks. It covers:
 - combat: punch flinch with physical recoil, punch combo stagger, kick stagger and knock-back, knockdown with a run-up or on a staggered or airborne target, get-up afterwards, guard blocking from the front but not from behind, kicks breaking guard, the sparring dummy hitting the player and the player's guard blocking it, kicks hitting the bag harder than punches, no attacks while carrying
 - objects: lift, carry while running, throw, drop, push and pull the crate, the heavier block being slower, the monolith being too heavy
 - ledges: ground, running and mid-air mantles; grab, hang height and hand placement; shimmy and stopping at the ledge end; climbing up; dropping off without re-grabbing; out-of-reach walls
+- gait: planted feet don't slide, swinging feet clear the ground and the hips stay up at stroll, walk and run; stopping settles both feet under the hips and then stops stepping; turning on the spot steps the feet round
 - foot IK on a 30° slope and on stairs (feet on the surface and tilted to it, pelvis drop, stair climb without sinking)
 - slide distance
 - roll tumble
@@ -215,11 +226,11 @@ See [docs/performance.md](docs/performance.md) for the benchmark (`tests/benchma
 - A budgeted LOD keeps only the nearest 5 characters fully simulated and the next 20 in a cheaper KINEMATIC tier; everyone else is PROXY_ONLY. Reduced tiers park their physics bodies and update at 30 Hz or 15 Hz, costing about 0.05 ms per character (7–9× cheaper).
 - Hits, strikes and being run into promote a character back to full simulation instantly.
 - **Crowd layer** (`scripts/crowd/`): NPCs as plain data drawn with chunked MultiMeshes and baked vertex animation. Only the 24 nearest become real characters, borrowed from a pool.
-- **Crowd test** (`tests/crowd.gd --npcs=N`): the player sprints through a crowd, knocking some NPCs over. Simulation FPS on this cloud CPU (no rendering): 1000 NPCs at 119 FPS on average (99th percentile 76 FPS), 10,000 at 61 FPS. With every NPC a full character (`--characters`), 100 NPCs ran at 76 FPS.
+- **Crowd test** (`tests/crowd.gd --npcs=N`): the player sprints through a crowd, knocking some NPCs over. Simulation FPS on this cloud CPU (no rendering): 1000 NPCs at 105 FPS on average (99th percentile 65 FPS), 10,000 at 55 FPS. With every NPC a full character (`--characters`), 100 NPCs run at 66 FPS.
 
 ## Watching it without playing
 
-`tests/showcase.gd` contains scripted clips (movement, falls, terrain, ledges, objects, combat, hazards) with captions. Record one to video with Godot's movie writer:
+`tests/showcase.gd` contains scripted clips (locomotion, movement, gait, falls, terrain, ledges, objects, combat, hazards) with captions. Record one to video with Godot's movie writer:
 
 ```
 godot --rendering-driver opengl3 --resolution 1280x720 --write-movie clip.avi --fixed-fps 30 --path . -s tests/showcase.gd -- --clip=combat
@@ -233,7 +244,8 @@ scenes/main.tscn, player.tscn
 scripts/main.gd                    level, player, camera, HUD
 scripts/input_setup.gd             input actions (keyboard + gamepad), layer constants
 scripts/player/player_controller.gd  movement + state machine
-scripts/player/pose_generator.gd     procedural poses (gait, crouch, slide, air, roll, get-up)
+scripts/player/pose_generator.gd     procedural poses (crouch, slide, air, roll, get-up) + gait body motion
+scripts/player/foot_planner.gd       locomotion: planted feet, swing arcs, cadence / stride / duty by speed
 scripts/player/ragdoll_rig.gd        builds the puppet, FK targets, muscles, hit handling
 scripts/player/puppet_bone.gd        per-body drive + contact hit detection
 scripts/player/bone_def.gd           humanoid definition
