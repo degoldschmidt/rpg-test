@@ -11,7 +11,11 @@ GODOT="${GODOT:-godot}"
 GROUPS_ALL=(core movement terrain objects combat)
 GROUPS_SEL=("${@:-${GROUPS_ALL[@]}}")
 if [ "$#" -eq 0 ]; then GROUPS_SEL=("${GROUPS_ALL[@]}"); fi
-JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
+JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
+# macOS has no `timeout` (coreutils' gtimeout if installed); run without a limit otherwise.
+TIMEOUT=""
+if command -v timeout >/dev/null 2>&1; then TIMEOUT="timeout 1500";
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT="gtimeout 1500"; fi
 LOGDIR="$(mktemp -d)"
 
 "$GODOT" --headless --path . --import >/dev/null 2>&1
@@ -20,11 +24,12 @@ start=$(date +%s)
 pids=()
 running=0
 for g in "${GROUPS_SEL[@]}"; do
-  ( timeout 1500 "$GODOT" --headless --fixed-fps 120 --path . -s tests/run_tests.gd -- \
+  ( $TIMEOUT "$GODOT" --headless --fixed-fps 120 --path . -s tests/run_tests.gd -- \
       "--suite=$SUITE" "--group=$g" >"$LOGDIR/$g.log" 2>&1; echo $? >"$LOGDIR/$g.code" ) &
   pids+=($!)
   running=$((running + 1))
-  if [ "$running" -ge "$JOBS" ]; then wait -n; running=$((running - 1)); fi
+  # Batches of $JOBS (portable to macOS bash 3.2, which has no `wait -n`).
+  if [ "$running" -ge "$JOBS" ]; then wait; running=0; fi
 done
 wait
 

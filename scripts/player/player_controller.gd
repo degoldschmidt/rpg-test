@@ -31,10 +31,9 @@ var face_target: Node3D = null      ## AI: keep turning toward this while slow /
 ## LOD: distant characters stop simulating their puppet (the player keeps this off).
 var lod_enabled := false
 var lod_force := -1                 ## debug / benchmark: pin a CharacterLOD.Tier
+var lod_assigned := 0               ## set by CharacterLOD.assign (budgeted)
 var _lod_timer := 0.0
 var _lod_hold := 0.0
-var _stride := 0
-var _stride_dt := 0.0
 var pose_gen := PoseGenerator.new()
 
 ## Debug readouts.
@@ -75,6 +74,8 @@ var _released: Array = []           ## [{body, t}] collision exceptions to resto
 
 func _ready() -> void:
 	InputSetup.ensure_actions()
+	_lod_phase = _phase_counter  # deterministic spread of strided ticks
+	_phase_counter += 1
 	if config == null:
 		config = MovementConfig.new()
 	collision_layer = InputSetup.LAYER_PROXY
@@ -157,13 +158,60 @@ func capsule_height() -> float:
 ## Benchmark instrumentation: total microseconds spent in controller script per tick.
 static var profile := false
 static var profile_usec := 0
+## Per-section microseconds while `profile` is on (pose, rig, loco, skin, drive).
+static var prof := {}
+
+var _tick_acc := 0.0
+var _tick_n := 0
+static var _phase_counter := 0
+var _lod_phase := 0
+
+
+static func prof_add(section: String, usec: int) -> void:
+	prof[section] = int(prof.get(section, 0)) + usec
 
 
 func _physics_process(dt: float) -> void:
+	# Reduced LOD tiers run their whole controller at a fraction of the tick rate.
+	_tick_acc += dt
+	_tick_n += 1
+	# Stagger: each character ticks on its own phase so reduced tiers don't all land on one frame.
+	var stride := _tick_stride()
+	if stride > 1 and (Engine.get_physics_frames() + _lod_phase) % stride != 0:
+		return
+	var step := _tick_acc
+	_tick_acc = 0.0
+	_tick_n = 0
 	var t0 := Time.get_ticks_usec() if profile else 0
-	_physics_tick(dt)
+	_physics_tick(step)
 	if profile:
 		profile_usec += Time.get_ticks_usec() - t0
+
+
+## True if the controller runs this physics tick (reduced LOD tiers skip ticks).
+func ticks_this_frame() -> bool:
+	var stride := _tick_stride()
+	return stride <= 1 or (Engine.get_physics_frames() + _lod_phase) % stride == 0
+
+
+func _tick_stride() -> int:
+	match rig.lod:
+		CharacterLOD.Tier.KINEMATIC:
+			return maxi(config.kinematic_stride, 1)
+		CharacterLOD.Tier.PROXY_ONLY:
+			return maxi(config.pose_stride, 1)
+	return 1
+
+
+## move_and_slide integrates over one physics tick; scale for strided ticks.
+func _move(dt: float) -> void:
+	var k := dt / get_physics_process_delta_time()
+	if absf(k - 1.0) < 0.001:
+		move_and_slide()
+		return
+	velocity *= k
+	move_and_slide()
+	velocity /= k
 
 
 func _physics_tick(dt: float) -> void:
@@ -333,7 +381,11 @@ func _update_locomotion(dt: float) -> void:
 	velocity = Vector3(hv.x, vy, hv.z)
 	var pre_vy := vy
 	var was_air := state == State.AIR
-	move_and_slide()
+	var tl := Time.get_ticks_usec() if profile else 0
+	_pre_move_velocity = velocity
+	_move(dt)
+	if profile:
+		prof_add("move_and_slide", Time.get_ticks_usec() - tl)
 	_push_props()
 
 	if was_air and is_on_floor() and state == State.AIR:
@@ -457,6 +509,15 @@ func _on_land(impact: float) -> void:
 func _push_props() -> void:
 	for i in get_slide_collision_count():
 		var c := get_slide_collision(i)
+		var other := c.get_collider() as PlayerController
+		if other:
+			if state == State.ATTACK:
+				continue  # mid-strike, the attack is what connects, not a body check
+			var push := -c.get_normal()
+			push.y = 0.0
+			# Use the velocity we hit with (move_and_slide has already slid it along the contact).
+			other.receive_shove(push.normalized() * maxf(_pre_move_velocity.dot(push.normalized()), 0.0), c.get_position(), self)
+			continue
 		var body := c.get_collider() as RigidBody3D
 		if body:
 			var push := -c.get_normal()
@@ -923,6 +984,24 @@ func start_stagger(v: Vector3) -> void:
 	state_time = 0.0
 
 
+var _shove_cooldown := 0.0
+var _pre_move_velocity := Vector3.ZERO
+
+
+## Another character ran into us. Fast collisions knock down, medium ones stagger.
+func receive_shove(v: Vector3, point: Vector3, from: PlayerController) -> void:
+	if _shove_cooldown > 0.0 or state == State.RAGDOLL or v.length() < config.shove_stagger_speed:
+		return
+	_shove_cooldown = 0.5
+	promote_lod()
+	if v.length() >= config.shove_knockdown_speed:
+		enter_ragdoll(v * 0.7 + Vector3.UP * 1.5, point)
+		combat.react_external(&"knockdown", v.length())
+	else:
+		start_stagger(v * 0.6)
+		combat.react_external(&"stagger", v.length())
+
+
 ## Entry point for melee hits from other characters (see CombatComponent).
 func receive_hit(info: Dictionary) -> void:
 	promote_lod()
@@ -933,13 +1012,14 @@ func receive_hit(info: Dictionary) -> void:
 # ---------------------------------------------------------------- LOD
 
 ## Busy characters always simulate fully, whatever the distance.
-func _lod_locked_full() -> bool:
+func lod_locked_full() -> bool:
 	return _lod_hold > 0.0 or _carried != null or _grabbed != null or state in [
 		State.RAGDOLL, State.GET_UP, State.STAGGER, State.ATTACK, State.LEDGE_HANG, State.CLIMB, State.GRAB]
 
 
 func _update_lod(dt: float) -> void:
 	_lod_hold -= dt
+	_shove_cooldown -= dt
 	if not lod_enabled:
 		if rig.lod != CharacterLOD.Tier.FULL:
 			rig.set_lod(CharacterLOD.Tier.FULL, velocity)
@@ -951,8 +1031,9 @@ func _update_lod(dt: float) -> void:
 	var tier: int = CharacterLOD.Tier.FULL
 	if lod_force >= 0:
 		tier = lod_force
-	elif not _lod_locked_full() and CharacterLOD.focus and is_instance_valid(CharacterLOD.focus):
-		tier = CharacterLOD.tier_for_distance(global_position.distance_to(CharacterLOD.focus.global_position), config)
+	elif not lod_locked_full() and CharacterLOD.focus and is_instance_valid(CharacterLOD.focus):
+		CharacterLOD.assign(get_tree(), config)
+		tier = lod_assigned
 	_apply_lod(tier)
 
 
@@ -1084,17 +1165,13 @@ func _update_puppet(dt: float) -> void:
 	var hands := _hand_targets()
 	ctx["hand_targets"] = hands
 	ctx.merge(combat.pose_ctx(), true)
-	if rig.lod != CharacterLOD.Tier.FULL:
-		# Reduced tiers animate at a fraction of the tick rate.
-		var stride := config.pose_stride if rig.lod == CharacterLOD.Tier.PROXY_ONLY else config.kinematic_stride
-		_stride += 1
-		_stride_dt += dt
-		if _stride % maxi(stride, 1) != 0:
-			return
-		dt = _stride_dt
-	_stride_dt = 0.0
+	var tp := Time.get_ticks_usec() if profile else 0
 	var pose := pose_gen.compute(ctx, dt)
+	var tr := Time.get_ticks_usec() if profile else 0
 	rig.step(dt, root_transform(), velocity if state != State.RAGDOLL else Vector3.ZERO, pose)
+	if profile:
+		prof_add("pose", tr - tp)
+		prof_add("rig", Time.get_ticks_usec() - tr)
 
 	var hit := rig.consume_hit()
 	last_hit = maxf(last_hit * 0.99, hit)

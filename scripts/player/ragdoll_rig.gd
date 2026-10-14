@@ -29,8 +29,8 @@ var _prev_target: Dictionary = {}
 var _hit_accum := 0.0
 var _has_prev := false
 
-## Level of detail (see CharacterLOD). FULL simulates, KINEMATIC snaps frozen bodies to the
-## animated targets, PROXY_ONLY also removes them from collision.
+## Level of detail (see CharacterLOD). FULL simulates; the reduced tiers park the bodies outside
+## the physics server and only animate (KINEMATIC every 2nd tick, PROXY_ONLY every 4th).
 var lod: int = CharacterLOD.Tier.FULL
 var pose_version := 0            ## bumped every step; the skin skips frames when unchanged
 var _def: Dictionary = {}       ## StringName -> BoneDef
@@ -156,17 +156,10 @@ func _add_face(head: Node3D, r: float) -> void:
 func step(dt: float, root: Transform3D, root_velocity: Vector3, pose: Dictionary) -> void:
 	pose_version += 1
 	if lod != CharacterLOD.Tier.FULL:
-		# No physics: place the frozen bodies exactly on the animation (no IK raycasts).
-		var flat := pose.duplicate()
-		flat["foot_ik"] = 0.0
-		flat["hand_ik"] = 0.0
-		var kt := compute_targets(root, flat, dt)
-		var move_bodies := lod == CharacterLOD.Tier.KINEMATIC  # proxy-only: the skin reads targets
+		# No physics and no IK raycasts: plain FK of the animation.
+		var kt := _fk(root, pose, 0.0)
 		for d in defs:
-			var b: PuppetBone = bones[d.name]
-			b.target = kt[d.name]
-			if move_bodies:
-				b.global_transform = kt[d.name]
+			(bones[d.name] as PuppetBone).target = kt[d.name]  # bodies are parked; the skin reads targets
 		_prev_target = kt
 		return
 	var targets := compute_targets(root, pose, dt)
@@ -222,20 +215,50 @@ func _hand_ik(out: Dictionary, root: Transform3D, pose: Dictionary) -> void:
 			fk_wrist.lerp(wrist, w), Quaternion.IDENTITY, pole, true)
 
 
+## Flat FK tables built once (hot path: runs for every character every animation tick).
+var _fk_names: Array[StringName] = []
+var _fk_parent := PackedInt32Array()
+var _fk_to_pivot := PackedVector3Array()   ## parent center -> this pivot, in parent frame
+var _fk_to_center := PackedVector3Array()  ## this pivot -> this center
+var _fk_root_center := Vector3.ZERO
+
+
+func _build_fk_tables() -> void:
+	var index := {}
+	for i in defs.size():
+		var d := defs[i]
+		index[d.name] = i
+		_fk_names.append(d.name)
+		if d.parent == &"":
+			_fk_parent.append(-1)
+			_fk_to_pivot.append(Vector3.ZERO)
+			_fk_root_center = d.center
+		else:
+			_fk_parent.append(index[d.parent])
+			_fk_to_pivot.append(d.pivot - (_def[d.parent] as BoneDef).center)
+		_fk_to_center.append(d.center - d.pivot)
+
+
 func _fk(root: Transform3D, pose: Dictionary, pelvis_drop: float) -> Dictionary:
+	if _fk_names.is_empty():
+		_build_fk_tables()
 	var rots: Dictionary = pose.get("bones", {})
 	var root_rot: Quaternion = pose.get("root_rot", Quaternion.IDENTITY)
 	var root_off: Vector3 = pose.get("root_offset", Vector3.ZERO) + Vector3.UP * pelvis_drop
 	var out := {}
-	for d in defs:
-		if d.parent == &"":
-			out[d.name] = Transform3D(root.basis * Basis(root_rot), root * (d.center + root_off))
-			continue
-		var pd: BoneDef = _def[d.parent]
-		var pt: Transform3D = out[d.parent]
-		var pivot_w := pt.origin + pt.basis * (d.pivot - pd.center)
-		var basis := pt.basis * Basis(rots.get(d.name, Quaternion.IDENTITY) as Quaternion)
-		out[d.name] = Transform3D(basis, pivot_w + basis * (d.center - d.pivot))
+	var xf: Array[Transform3D] = []
+	xf.resize(_fk_names.size())
+	for i in _fk_names.size():
+		var p := _fk_parent[i]
+		var t: Transform3D
+		if p < 0:
+			t = Transform3D(root.basis * Basis(root_rot), root * (_fk_root_center + root_off))
+		else:
+			var pt := xf[p]
+			var basis := pt.basis * Basis(rots.get(_fk_names[i], Quaternion.IDENTITY) as Quaternion)
+			t = Transform3D(basis, pt.origin + pt.basis * _fk_to_pivot[i] + basis * _fk_to_center[i])
+		xf[i] = t
+		out[_fk_names[i]] = t
 	return out
 
 
@@ -349,9 +372,9 @@ func weaken(bone_name: StringName, amount: float) -> void:
 		_weak[bone_name] = clampf(amount, 0.0, 1.0)
 
 
-## Where a bone is shown: its body, or its animation target while proxy-only (bodies parked).
+## Where a bone is shown: its body, or its animation target while bodies are parked (reduced tiers).
 func display_transform(b: PuppetBone) -> Transform3D:
-	return b.target if lod == CharacterLOD.Tier.PROXY_ONLY else b.global_transform
+	return b.target if lod != CharacterLOD.Tier.FULL else b.global_transform
 
 
 func pelvis() -> PuppetBone:
@@ -372,8 +395,12 @@ func set_lod(tier: int, velocity := Vector3.ZERO) -> void:
 		return
 	lod = tier
 	for b: PuppetBone in bones.values():
-		if tier != CharacterLOD.Tier.PROXY_ONLY:
-			b.global_transform = b.target  # bodies were left behind while proxy-only
+		# Proxy-only bodies are taken out of the physics server entirely (no callbacks, no
+		# broadphase); contacts are only reported where hits can happen.
+		b.process_mode = Node.PROCESS_MODE_INHERIT if tier == CharacterLOD.Tier.FULL else Node.PROCESS_MODE_DISABLED
+		b.contact_monitor = tier == CharacterLOD.Tier.FULL
+		if tier == CharacterLOD.Tier.FULL:
+			b.global_transform = b.target  # bodies were parked while in a reduced tier
 		match tier:
 			CharacterLOD.Tier.FULL:
 				b.collision_layer = InputSetup.LAYER_PUPPET
@@ -381,12 +408,7 @@ func set_lod(tier: int, velocity := Vector3.ZERO) -> void:
 				b.freeze = false
 				b.linear_velocity = velocity
 				b.angular_velocity = Vector3.ZERO
-			CharacterLOD.Tier.KINEMATIC:
-				b.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
-				b.freeze = true
-				b.collision_layer = InputSetup.LAYER_PUPPET
-				b.collision_mask = 0
-			CharacterLOD.Tier.PROXY_ONLY:
+			_:
 				b.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
 				b.freeze = true
 				b.collision_layer = 0

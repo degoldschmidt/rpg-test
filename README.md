@@ -8,6 +8,19 @@ It follows its animation tightly, wobbles when hit, and collapses into a full ra
 
 ## Run it
 
+**On a Mac** (Apple Silicon or Intel), one script downloads Godot 4.5.1 on first use and runs everything:
+
+```
+tools/crowd_mac.sh                # crowd test live: 100 NPCs, real rendering, real FPS overlay
+tools/crowd_mac.sh live-uncapped  # same with vsync off, to see headroom above the display refresh
+tools/crowd_mac.sh measure        # simulation-only FPS (comparable with docs/performance.md)
+tools/crowd_mac.sh video          # record out/crowd_mac.mp4 (brew install ffmpeg for .mp4)
+tools/crowd_mac.sh game           # play the test level
+tools/crowd_mac.sh tests          # full test suite
+```
+
+**Anywhere else:**
+
 1. Install [Godot 4.5.x](https://godotengine.org/download) (standard build, no C# needed).
 2. Open `project.godot` in Godot and press **F5**, or from a terminal run `godot --path .`.
 
@@ -197,8 +210,9 @@ The suite has 151 deterministic gameplay checks. It covers:
 
 See [docs/performance.md](docs/performance.md) for the benchmark (`tests/benchmark.gd`) and the character LOD tiers. In short:
 - A fully simulated active-ragdoll character costs about 0.35 ms per 120 Hz physics tick on a 2.1 GHz cloud CPU.
-- Distant characters drop to cheaper tiers: KINEMATIC beyond 25 m (−31 %) and PROXY_ONLY beyond 60 m (−54 %).
-- Hits promote them back to full simulation instantly.
+- A budgeted LOD keeps only the nearest 5 characters fully simulated and the next 20 in a cheaper KINEMATIC tier; everyone else is PROXY_ONLY. Reduced tiers park their physics bodies and update at 30 Hz or 15 Hz, costing about 0.05 ms per character (7–9× cheaper).
+- Hits, strikes and being run into promote a character back to full simulation instantly.
+- **Crowd test** (`tests/crowd.gd`): the player sprints through 100 wandering NPCs, knocking some over, at about 76 FPS of simulation on this cloud CPU (CPU only, no rendering).
 
 ## Watching it without playing
 

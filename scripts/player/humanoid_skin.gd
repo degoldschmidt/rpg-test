@@ -38,6 +38,8 @@ var _pinned: Dictionary = {}     ## bone idx -> pivot offset in the body frame
 var _root_offset := Vector3.ZERO ## hips position in the pelvis body frame
 var _root_bone := -1
 var _world: Array[Transform3D] = []
+var _sk: Array[Transform3D] = []   ## skeleton-space globals, reused by children
+var _active: Array[int] = []       ## mapped bones + their unmapped ancestors, parents first
 var _rig: RagdollRig
 var _seen_version := -1
 var _material: StandardMaterial3D
@@ -100,6 +102,19 @@ func setup(rig: RagdollRig) -> void:
 			_root_bone = b
 			_root_offset = MODEL_TO_RIG * (g.origin * _scale) - body.def.center
 
+	# Only mapped bones move; fingers, toes etc. keep their rest pose relative to their parent,
+	# so per frame we rebuild just the mapped bones and the ancestors they hang from.
+	var needed := {}
+	for b in _body:
+		var p: int = b
+		while p >= 0:
+			needed[p] = true
+			p = _parent[p]
+	for b in _order:
+		if needed.has(b):
+			_active.append(b)
+	_sk.resize(n)
+
 
 func _process(_dt: float) -> void:
 	if skeleton == null:
@@ -108,7 +123,10 @@ func _process(_dt: float) -> void:
 	if _rig.lod != CharacterLOD.Tier.FULL and _rig.pose_version == _seen_version:
 		return
 	_seen_version = _rig.pose_version
+	var t0 := Time.get_ticks_usec() if PlayerController.profile else 0
 	update_pose()
+	if PlayerController.profile:
+		PlayerController.prof_add("skin", Time.get_ticks_usec() - t0)
 
 
 ## Debug tint (F3 shows LOD tiers); Color.WHITE clears it.
@@ -124,7 +142,7 @@ func update_pose() -> void:
 	skeleton.global_transform = xs
 	var xs_inv := xs.affine_inverse()
 	var rot_inv := MODEL_TO_RIG.inverse()
-	for b in _order:
+	for b in _active:
 		var p := _parent[b]
 		var w := Transform3D()
 		if _body.has(b):
@@ -146,10 +164,10 @@ func update_pose() -> void:
 		_world[b] = w
 		# Back to skeleton space (unit rotation, origins in model units) as a local pose.
 		var sk := Transform3D(rot_inv * w.basis, xs_inv * w.origin)
-		var local := sk
-		if p >= 0:
-			var psk := Transform3D(rot_inv * _world[p].basis, xs_inv * _world[p].origin)
-			local = psk.affine_inverse() * sk
+		_sk[b] = sk
+		if not _body.has(b):
+			continue  # unmapped ancestor: its pose stays at rest
+		var local := sk if p < 0 else _sk[p].affine_inverse() * sk
 		skeleton.set_bone_pose_position(b, local.origin)
 		skeleton.set_bone_pose_rotation(b, local.basis.get_rotation_quaternion())
 

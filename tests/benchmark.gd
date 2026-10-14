@@ -32,8 +32,13 @@ func _run() -> void:
 	var md := _table()
 	print(md)
 	if out_path != "":
-		var f := FileAccess.open("res://" + out_path, FileAccess.WRITE)
-		f.store_string(md)
+		# Absolute paths as given; relative ones are relative to the project.
+		var path := out_path if out_path.is_absolute_path() else "res://" + out_path
+		var f := FileAccess.open(path, FileAccess.WRITE)
+		if f:
+			f.store_string(md)
+		else:
+			push_error("Could not write %s: %s" % [path, error_string(FileAccess.get_open_error())])
 	quit()
 
 
@@ -63,6 +68,7 @@ func _measure(scenario: String, n: int) -> Dictionary:
 		if i == WARMUP:
 			PlayerController.profile = true
 			PlayerController.profile_usec = 0
+			PlayerController.prof = {}
 		var t0 := Time.get_ticks_usec()
 		await process_frame
 		if i == WARMUP:
@@ -77,6 +83,10 @@ func _measure(scenario: String, n: int) -> Dictionary:
 	}
 	r["other_ms"] = r.wall_ms - r.script_ms
 	r["per_char_ms"] = r.wall_ms / n
+	var parts := []
+	for k in PlayerController.prof:
+		parts.append("%s %.3f" % [k, PlayerController.prof[k] / 1000.0 / TICKS / n])
+	print("    per char ms/tick: ", ", ".join(parts))
 	print("%-9s n=%3d  %.2f ms/tick (controller script %.2f, physics+drive+skin %.2f)  %.3f ms/char" % [scenario, n, r.wall_ms, r.script_ms, r.other_ms, r.per_char_ms])
 	w.queue_free()
 	await process_frame

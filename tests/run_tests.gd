@@ -37,6 +37,7 @@ const TESTS := [
 	["test_sparring_hits_player", "combat", false],
 	["test_punch_prop", "combat", false],
 	["test_no_attack_while_carrying", "objects", false],
+	["test_run_into_npc", "combat", true],
 	["test_walk_momentum", "movement", true],
 	["test_run_momentum", "movement", false],
 	["test_skid", "movement", false],
@@ -464,7 +465,7 @@ func test_lod_tiers() -> void:
 	check("the player is always FULL", player.rig.lod == CharacterLOD.Tier.FULL)
 	await place(p + Vector3(0, 0, 40), 0.6)
 	check("mid-range dummy is KINEMATIC", d.rig.lod == CharacterLOD.Tier.KINEMATIC, "(%s)" % lod_name(d))
-	check("kinematic puppet is frozen but still hittable", bodies_frozen(d) and d.rig.pelvis().collision_layer == InputSetup.LAYER_PUPPET)
+	check("kinematic puppet is parked (no physics bodies)", bodies_frozen(d) and d.rig.pelvis().collision_layer == 0)
 	d.skin.update_pose()
 	var hips := d.skin.bone_world_position("spine").distance_to(d.rig.pelvis().global_position)
 	check("skin still follows a reduced-tier puppet", hips < 0.2, "(%.2f m)" % hips)
@@ -510,6 +511,22 @@ func test_lod_ragdoll_stays_full() -> void:
 
 
 # ------------------------------------------------------------------ combat tests
+
+func test_run_into_npc() -> void:
+	print("running into NPCs")
+	var d := await square_up("passive", 6.0)
+	inp(Vector2(0, 1), true)
+	var t := await wait_dummy_state(d, PlayerController.State.RAGDOLL, 2.0)
+	inp()
+	check("sprinting into an NPC knocks it down", t >= 0.0 and &"knockdown" in reactions_of("passive"), "(%s)" % [reactions_of("passive")])
+	await wait_dummy_state(d, PlayerController.State.IDLE, 8.0)
+	d = await square_up("passive", 2.5)
+	inp(Vector2(0, 1))
+	t = await wait_dummy_state(d, PlayerController.State.STAGGER, 2.0)
+	inp()
+	check("walking into an NPC staggers it", t >= 0.0 and reactions_of("passive") == [&"stagger"], "(%s)" % [reactions_of("passive")])
+	await seconds(1.0)
+
 
 func test_punch_flinch() -> void:
 	print("punch -> flinch")
