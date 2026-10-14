@@ -3,7 +3,7 @@ extends SceneTree
 ## with LOD). Running into them shoves, staggers or knocks them down.
 ##
 ## 1) Measure (headless, real CPU time per 60 fps frame = 2 physics ticks + AI + animation + skin):
-##    godot --headless --fixed-fps 60 --path . -s tests/crowd.gd -- --measure --timeline=crowd.json
+##    godot --headless --fixed-fps 60 --path . -s tests/crowd.gd -- --measure --timeline=crowd.json [--npcs=100]
 ## 2) Video of the same deterministic run, overlaying the measured simulation FPS per frame:
 ##    godot --rendering-driver opengl3 --resolution 1280x720 --write-movie crowd.avi --fixed-fps 60 \
 ##      --path . -s tests/crowd.gd -- --timeline=crowd.json
@@ -12,7 +12,7 @@ extends SceneTree
 ## (tools/crowd_mac.sh wraps all three for macOS.)
 
 const PLAYER_SCENE := preload("res://scenes/player.tscn")
-const NPCS := 100
+var NPCS := 100
 const SPACING := 2.6
 const DURATION := 22.0   # seconds of game time
 
@@ -39,6 +39,8 @@ func _initialize() -> void:
 			live = true
 		elif a == "--no-vsync":
 			no_vsync = true
+		elif a.begins_with("--npcs="):
+			NPCS = int(a.trim_prefix("--npcs="))
 		elif a.begins_with("--timeline="):
 			timeline_path = a.trim_prefix("--timeline=")
 	_run()
