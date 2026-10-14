@@ -38,9 +38,13 @@ var _pinned: Dictionary = {}     ## bone idx -> pivot offset in the body frame
 var _root_offset := Vector3.ZERO ## hips position in the pelvis body frame
 var _root_bone := -1
 var _world: Array[Transform3D] = []
+var _rig: RagdollRig
+var _seen_version := -1
+var _material: StandardMaterial3D
 
 
 func setup(rig: RagdollRig) -> void:
+	_rig = rig
 	model = model_scene.instantiate()
 	add_child(model)
 	skeleton = model.find_children("*", "Skeleton3D", true, false)[0]
@@ -51,6 +55,7 @@ func setup(rig: RagdollRig) -> void:
 		mat.albedo_color = skin_color
 		mat.roughness = 0.6
 		mi.material_override = mat
+		_material = mat
 		mi.extra_cull_margin = 2.0
 	_scale = height / mesh_aabb.size.y
 
@@ -99,7 +104,17 @@ func setup(rig: RagdollRig) -> void:
 func _process(_dt: float) -> void:
 	if skeleton == null:
 		return
+	# Physics bodies move every tick in FULL; reduced tiers only when the rig stepped.
+	if _rig.lod != CharacterLOD.Tier.FULL and _rig.pose_version == _seen_version:
+		return
+	_seen_version = _rig.pose_version
 	update_pose()
+
+
+## Debug tint (F3 shows LOD tiers); Color.WHITE clears it.
+func set_tint(c: Color) -> void:
+	if _material:
+		_material.albedo_color = skin_color * c
 
 
 ## Rebuilds every bone from the current puppet body transforms.

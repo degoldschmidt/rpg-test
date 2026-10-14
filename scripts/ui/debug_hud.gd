@@ -10,7 +10,7 @@ Q / X  forward roll (press just before landing to roll out of big falls)
 Jump at a chest-high ledge: mantle | jump at a higher one: grab. Hanging: A/D shimmy, jump/W climb, crouch/S drop
 LMB,J / Y  punch     K,V / RT  kick     hold RMB,L / LT  guard
 E / RB  lift, drop, grab to push/pull     F / LB  throw
-G / Y  toggle ragdoll     R / Back  reset     F2  physics bodies     Mouse / right stick  camera
+G / D-pad down  toggle ragdoll     R / Back  reset     F2  physics bodies     F3  LOD tiers     Mouse / right stick  camera
 Click to capture mouse, Esc to release, F1 hide help"""
 
 var _label: Label
@@ -68,9 +68,18 @@ func watch(character: PlayerController, label: String) -> void:
 		_event_t = 0.0)
 
 
+func _tier_counts() -> String:
+	var n := [0, 0, 0]
+	for c in get_tree().get_nodes_in_group("characters"):
+		n[(c as PlayerController).rig.lod] += 1
+	return "%d / %d / %d" % n
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("toggle_help"):
 		_help.visible = not _help.visible
+	elif event.is_action_pressed("toggle_lod_tint"):
+		CharacterLOD.show_tiers = not CharacterLOD.show_tiers
 
 
 func _process(_dt: float) -> void:
@@ -79,9 +88,9 @@ func _process(_dt: float) -> void:
 	_hint.text = player.interact_hint()
 	_event_t += _dt
 	_event.modulate.a = clampf(1.5 - _event_t, 0.0, 1.0)
-	_label.text = "State: %s%s\nSpeed: %.1f m/s   Vy: %.1f\nMuscle: %.2f\nLast landing: %.1f m/s   Last hit: %.0f\nFPS: %d" % [
+	_label.text = "State: %s%s\nSpeed: %.1f m/s   Vy: %.1f\nMuscle: %.2f\nLast landing: %.1f m/s   Last hit: %.0f\nCharacters full / kinematic / proxy: %s\nFPS: %d" % [
 		PlayerController.State.keys()[player.state], "  (guard)" if player.combat.guarding else "",
 		player.horizontal_speed(), player.velocity.y,
-		player.rig.muscle, player.last_impact, player.last_hit,
+		player.rig.muscle, player.last_impact, player.last_hit, _tier_counts(),
 		Engine.get_frames_per_second(),
 	]

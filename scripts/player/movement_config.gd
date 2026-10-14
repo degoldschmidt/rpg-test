@@ -87,6 +87,13 @@ extends Resource
 @export var knockdown_speed := 5.0
 @export var lock_on_range := 3.0
 
+@export_group("Performance")
+@export var lod_full_range := 25.0       ## closer than this to the LOD focus: full active ragdoll
+@export var lod_kinematic_range := 60.0  ## closer than this: kinematic puppet; beyond: proxy only
+@export var pose_stride := 4             ## proxy-only tier animates every Nth tick
+@export var lod_update_interval := 0.25
+@export var lod_promote_hold := 3.0      ## stay FULL this long after a hit / ragdoll
+
 @export_group("Landing & ragdoll")
 @export var stumble_land_speed := 14.0
 @export var ragdoll_land_speed := 19.0

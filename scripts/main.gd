@@ -46,6 +46,7 @@ func _ready() -> void:
 	camera_rig.player = player
 	add_child(camera_rig)
 
+	CharacterLOD.focus = player
 	var a: Vector3 = markers.arena
 	_spawn_dummy("passive", a + Vector3(-3, 0, 0), DummyBrain.Mode.PASSIVE)
 	_spawn_dummy("guard", a + Vector3(1, 0, 0), DummyBrain.Mode.GUARD)
@@ -113,6 +114,7 @@ func _spawn_dummy(dummy_name: String, pos: Vector3, mode: DummyBrain.Mode) -> Pl
 	var d: PlayerController = PLAYER_SCENE.instantiate()
 	d.name = "Dummy_" + dummy_name
 	d.use_external_input = true
+	d.lod_enabled = true
 	d.body_color = Color(0.7, 0.2, 0.18)
 	d.skin_color = Color(0.6, 0.3, 0.26)
 	d.position = pos

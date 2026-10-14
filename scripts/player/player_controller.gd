@@ -28,6 +28,13 @@ var rig: RagdollRig
 var skin: HumanoidSkin
 var combat: CombatComponent
 var face_target: Node3D = null      ## AI: keep turning toward this while slow / guarding / attacking
+## LOD: distant characters stop simulating their puppet (the player keeps this off).
+var lod_enabled := false
+var lod_force := -1                 ## debug / benchmark: pin a CharacterLOD.Tier
+var _lod_timer := 0.0
+var _lod_hold := 0.0
+var _stride := 0
+var _stride_dt := 0.0
 var pose_gen := PoseGenerator.new()
 
 ## Debug readouts.
@@ -147,7 +154,20 @@ func capsule_height() -> float:
 
 # ---------------------------------------------------------------- main loop
 
+## Benchmark instrumentation: total microseconds spent in controller script per tick.
+static var profile := false
+static var profile_usec := 0
+
+
 func _physics_process(dt: float) -> void:
+	var t0 := Time.get_ticks_usec() if profile else 0
+	_physics_tick(dt)
+	if profile:
+		profile_usec += Time.get_ticks_usec() - t0
+
+
+func _physics_tick(dt: float) -> void:
+	_update_lod(dt)
 	_in = _read_input()
 	state_time += dt
 	match state:
@@ -905,14 +925,55 @@ func start_stagger(v: Vector3) -> void:
 
 ## Entry point for melee hits from other characters (see CombatComponent).
 func receive_hit(info: Dictionary) -> void:
+	promote_lod()
 	last_hit = float(info.strength) * 100.0
 	combat.resolve_hit(info)
+
+
+# ---------------------------------------------------------------- LOD
+
+## Busy characters always simulate fully, whatever the distance.
+func _lod_locked_full() -> bool:
+	return _lod_hold > 0.0 or _carried != null or _grabbed != null or state in [
+		State.RAGDOLL, State.GET_UP, State.STAGGER, State.ATTACK, State.LEDGE_HANG, State.CLIMB, State.GRAB]
+
+
+func _update_lod(dt: float) -> void:
+	_lod_hold -= dt
+	if not lod_enabled:
+		if rig.lod != CharacterLOD.Tier.FULL:
+			rig.set_lod(CharacterLOD.Tier.FULL, velocity)
+		return
+	_lod_timer -= dt
+	if _lod_timer > 0.0:
+		return
+	_lod_timer = config.lod_update_interval
+	var tier: int = CharacterLOD.Tier.FULL
+	if lod_force >= 0:
+		tier = lod_force
+	elif not _lod_locked_full() and CharacterLOD.focus and is_instance_valid(CharacterLOD.focus):
+		tier = CharacterLOD.tier_for_distance(global_position.distance_to(CharacterLOD.focus.global_position), config)
+	_apply_lod(tier)
+
+
+func _apply_lod(tier: int) -> void:
+	if tier != rig.lod:
+		rig.set_lod(tier, velocity)
+	skin.set_tint(CharacterLOD.TIER_COLORS[tier] if CharacterLOD.show_tiers else Color.WHITE)
+
+
+## Back to full simulation right now (hit, knockdown, ...), and stay there for a while.
+func promote_lod() -> void:
+	_lod_hold = config.lod_promote_hold
+	if rig.lod != CharacterLOD.Tier.FULL:
+		_apply_lod(CharacterLOD.Tier.FULL)
 
 
 # ---------------------------------------------------------------- ragdoll
 
 ## Hand control to the physical puppet. Optional velocity kick at a point (hazards, combat).
 func enter_ragdoll(dv := Vector3.ZERO, point := Vector3.ZERO) -> void:
+	promote_lod()
 	if state != State.RAGDOLL:
 		release_objects()
 		combat.cancel_attack()
@@ -1023,6 +1084,14 @@ func _update_puppet(dt: float) -> void:
 	var hands := _hand_targets()
 	ctx["hand_targets"] = hands
 	ctx.merge(combat.pose_ctx(), true)
+	if rig.lod == CharacterLOD.Tier.PROXY_ONLY:
+		# Far away: animate at a fraction of the tick rate.
+		_stride += 1
+		_stride_dt += dt
+		if _stride % maxi(config.pose_stride, 1) != 0:
+			return
+		dt = _stride_dt
+	_stride_dt = 0.0
 	var pose := pose_gen.compute(ctx, dt)
 	rig.step(dt, root_transform(), velocity if state != State.RAGDOLL else Vector3.ZERO, pose)
 
@@ -1039,6 +1108,7 @@ func reset() -> void:
 
 
 func teleport(pos: Vector3, yaw := 0.0) -> void:
+	_lod_timer = 0.0
 	global_position = pos
 	velocity = Vector3.ZERO
 	facing_yaw = yaw
