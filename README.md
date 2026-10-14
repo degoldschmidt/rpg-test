@@ -116,9 +116,11 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
   - **Speed.** Cadence, step length, duty factor and swing height follow speed. Walking keeps steps within what the legs can span and always has a foot down (double support). Above about 2 m/s (1.9–2.2 with hysteresis) the gait switches to a run with a flight phase: the foot lands closer in and pushes off further behind, and the heel tucks up in the swing (up to 0.5 m at a sprint).
   - **Foot roll.** Feet roll heel-to-toe: a heel strike when walking, then the heel peels off and the foot pivots on the toe.
   - **Standing still.** Feet stay planted. Turning on the spot or drifting triggers corrective steps until they're back under the hips.
-  - **Overreach.** A planted foot left far behind (turning around) steps right away instead of lunging.
+  - **Overreach.** A planted foot left far behind, crossed under the other one or turned far off the body's heading steps right away instead of lunging or twisting.
+  - **Turns.** Feet land along the curve. The landing prediction uses the turn rate of the direction of travel and assumes the turn eases off, so slalom steps don't land over-rotated. A planted foot whose heading falls far behind the body pivots on the ball of the foot (the toe stays put). The body turns at most 8 rad/s on the ground, a pace the feet can step with. Hard braking takes braking steps further ahead, followed by a pivot and push-off.
+  - **Banking.** The whole body leans into a turn by `atan(speed × turn rate / g)`, up to 20°, about the feet. The hips shift to the inside while the feet stay on the path.
   - **Legs.** Placed by two-bone IK (`_leg_ik` in `ragdoll_rig.gd`). The pelvis drops when a foot would be out of reach, which also gives the walk its natural low point at double support.
-  - **Upper body.** The step phase drives a weight shift over the stance foot and a hip drop on the swing side (walking), a bounce and forward lean (running), hips turning with the forward leg and shoulders counter-rotating, and arms swinging against the legs with more elbow bend the faster you go. Arm swing gives way while attacking, guarding, carrying or pushing.
+  - **Upper body.** The step phase drives a weight shift over the stance foot and a hip drop on the swing side (walking), and a bounce and forward lean (running). Arms and torso twist follow the legs themselves, the thighs' forward swing computed from the planned feet, so they are always contralateral: left arm forward while the right leg is forward, hips turning with the forward leg and shoulders counter-rotating, at any gait or turn. Elbows bend more the faster you go, and arm swing gives way while attacking, guarding, carrying or pushing.
   - **What you see.** While calm, the skin shows the animation for legs and pelvis, so planted feet stay planted (the physics chain lags fast steps by a few centimetres), 80 % of it for the arms and half of it for the torso and head. A weakened (hit) limb shows pure physics, so impacts still wobble.
   - **Measuring it.** `tests/gait_probe.gd` prints foot slip, clearance, duty, cadence and pelvis height for stroll, walk and run.
 - **Foot IK** (in `ragdoll_rig.gd`, after FK) for grounded poses outside locomotion (getting up, sliding). Each foot raycasts down to the ground under it.
@@ -207,6 +209,7 @@ The suite has 151 deterministic gameplay checks. It covers:
 - combat: punch flinch with physical recoil, punch combo stagger, kick stagger and knock-back, knockdown with a run-up or on a staggered or airborne target, get-up afterwards, guard blocking from the front but not from behind, kicks breaking guard, the sparring dummy hitting the player and the player's guard blocking it, kicks hitting the bag harder than punches, no attacks while carrying
 - objects: lift, carry while running, throw, drop, push and pull the crate, the heavier block being slower, the monolith being too heavy
 - ledges: ground, running and mid-air mantles; grab, hang height and hand placement; shimmy and stopping at the ledge end; climbing up; dropping off without re-grabbing; out-of-reach walls
+- gait: arms swing contralaterally to the legs (walk, jog, run); in a slalom and a turn-around at speed the feet don't cross, planted feet stay under the body's heading, the body leans into the turns and the knees keep bending forward
 - gait: planted feet don't slide, swinging feet clear the ground and the hips stay up at stroll, walk and run; stopping settles both feet under the hips and then stops stepping; turning on the spot steps the feet round
 - foot IK on a 30° slope and on stairs (feet on the surface and tilted to it, pelvis drop, stair climb without sinking)
 - slide distance
@@ -230,7 +233,7 @@ See [docs/performance.md](docs/performance.md) for the benchmark (`tests/benchma
 
 ## Watching it without playing
 
-`tests/showcase.gd` contains scripted clips (locomotion, movement, gait, falls, terrain, ledges, objects, combat, hazards) with captions. Record one to video with Godot's movie writer:
+`tests/showcase.gd` contains scripted clips (locomotion, turns, follow, movement, gait, falls, terrain, ledges, objects, combat, hazards) with captions. Record one to video with Godot's movie writer:
 
 ```
 godot --rendering-driver opengl3 --resolution 1280x720 --write-movie clip.avi --fixed-fps 30 --path . -s tests/showcase.gd -- --clip=combat

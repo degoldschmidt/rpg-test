@@ -2,7 +2,7 @@ extends SceneTree
 ## Scripted showcase clips for watching the prototype without playing it. Record one with:
 ##   xvfb-run godot --rendering-driver opengl3 --resolution 1280x720 --write-movie out.avi \
 ##     --fixed-fps 30 --path . -s tests/showcase.gd -- --clip=combat
-## Clips: locomotion, follow, movement, gait, falls, terrain, ledges, objects, combat, hazards
+## Clips: locomotion, turns, follow, movement, gait, falls, terrain, ledges, objects, combat, hazards
 
 var main: Node3D
 var player: PlayerController
@@ -173,6 +173,26 @@ func clip_locomotion() -> void:
 	say("Down a 30° slope: feet tilt to the ground")
 	await drive(Vector3.BACK * 0.5, 3.0, -1.6, {}, 0.0)
 	await drive(Vector3.ZERO, 1.0, -1.6, {}, 0.0)
+
+
+## Turning: a running slalom and a turn-around at speed, from behind and from above.
+func clip_turns() -> void:
+	main.hud.get_child(0).visible = false
+	var o: Vector3 = main.markers.open + Vector3(10, 0, 40)
+	for view in [[0.35, -0.3, 3.0, "from behind"], [0.0, -1.1, 4.2, "from above"]]:
+		await spot(o, 0.0, view[0], view[1], view[2])
+		say("Slalom, " + view[3] + ": bank into each turn, feet land on the curve")
+		await drive(Vector3.FORWARD, 1.5, view[0], {"run": true})
+		var t0 := 0.0
+		for i in int(4.5 * 120.0):
+			var a := sin(t0 * 2.6) * 0.9
+			go(Vector3(sin(a), 0, -cos(a)), {"run": true})
+			cam.yaw = lerp_angle(cam.yaw, view[0], 0.03)
+			t0 += 1.0 / 120.0
+			await physics_frame
+		say("Turn around at speed, " + view[3] + ": braking steps, pivot, push off")
+		await drive(Vector3.BACK, 2.5, view[0], {"run": true}, 0.0)
+		await drive(Vector3.ZERO, 1.2, view[0], {}, 0.0)
 
 
 ## Three-quarter view from behind (like a third-person game camera): stroll, walk, run.

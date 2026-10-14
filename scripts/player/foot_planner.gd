@@ -46,6 +46,10 @@ var _lift_rel := {}       ## side -> lift-off position relative to the root at l
 var _land_root := {}      ## side -> predicted root position at touchdown
 var _prev_facing := 0.0
 var _yaw_rate := 0.0
+var _prev_vel_yaw := 0.0
+var turn_rate := 0.0      ## how fast the direction of travel is turning (rad/s, + = left)
+var brake := 0.0          ## 0..1, hard deceleration: feet land further ahead (braking steps)
+var _pivoting := {&"l": false, &"r": false}
 
 
 func reset() -> void:
@@ -66,6 +70,8 @@ func update(c: Dictionary, dt: float) -> void:
 		_reset_feet(root, facing, space)
 		_prev_facing = facing
 		_yaw_rate = 0.0
+		_prev_vel_yaw = facing
+		turn_rate = 0.0
 		active = true
 	if dt <= 0.0:
 		return
@@ -76,10 +82,18 @@ func update(c: Dictionary, dt: float) -> void:
 	var vel: Vector3 = c.vel
 	vel.y = 0.0
 	var v := vel.length()
+	# Turn rate of the direction of travel (not the facing, which can snap round after a skid).
+	var vel_yaw := atan2(-vel.x, -vel.z) if v > 0.5 else facing
+	var dturn := wrapf(vel_yaw - _prev_vel_yaw, -PI, PI) / dt
+	if absf(dturn) > 10.0:
+		dturn = 0.0   # reversing through a standstill flips the heading: that's not a turn
+	_prev_vel_yaw = vel_yaw
+	turn_rate = lerpf(turn_rate, clampf(dturn, -6.0, 6.0), 1.0 - exp(-10.0 * dt))
+	brake = move_toward(brake, c.get("brake", 0.0), dt * 6.0)
 	var crouch: float = c.get("crouch", 0.0)
 	# Walk / run with hysteresis, so the gait doesn't flicker around the transition speed.
 	var want_run := v > (1.9 if run_k > 0.5 else 2.2)
-	run_k = move_toward(run_k, 1.0 if want_run and crouch < 0.5 else 0.0, dt * 3.0)
+	run_k = move_toward(run_k, 1.0 if want_run and crouch < 0.5 else 0.0, dt * (3.0 + 6.0 * brake))
 	sprint_k = move_toward(sprint_k, clampf((v - 3.6) / 3.6, 0.0, 1.0), dt * 3.0)
 	var moving := v > 0.2
 	moving_k = move_toward(moving_k, clampf(v / 1.0, 0.0, 1.0), dt * 4.0)
@@ -91,6 +105,8 @@ func update(c: Dictionary, dt: float) -> void:
 	cadence = lerpf(walk_fs, run_fs, run_k) * lerpf(1.0, 0.8, crouch)
 	if not moving:
 		cadence = 1.9   # corrective steps when standing
+	# Turning fast (pivoting round, slaloming) takes quicker steps.
+	cadence *= 1.0 + 0.6 * clampf(absf(_yaw_rate) / 6.0, 0.0, 1.0)
 	var cycle := 2.0 / cadence
 	# Duty: a walk always has a foot down (double support); a run is limited by how much ground
 	# one leg can cover while planted, which leaves a flight phase.
@@ -127,6 +143,7 @@ func update(c: Dictionary, dt: float) -> void:
 			stance[s] = -1.0
 			feet[s] = _swing_pose(s, u, root)
 		else:
+			_pivot(s, facing, dt)
 			var st := ph / duty
 			stance[s] = st
 			swing[s] = -1.0
@@ -137,16 +154,18 @@ func update(c: Dictionary, dt: float) -> void:
 ## predicted body position and heading at touchdown.
 func _predict_landing(s: StringName, root: Transform3D, facing: float, vel: Vector3, t_rem: float,
 		stance_t: float, space: PhysicsDirectSpaceState3D) -> void:
-	var turn := clampf(_yaw_rate * t_rem, -1.2, 1.2)
+	# The current turn, assumed to ease off over the rest of the swing (a slalom reverses before
+	# the foot lands), so feet don't land over-rotated.
+	var turn := clampf(turn_rate * t_rem * 0.5, -0.45, 0.45)
 	var vel_land := vel.rotated(Vector3.UP, turn)
 	var body := root.origin + (vel + vel_land) * 0.5 * t_rem
 	_land_root[s] = body
 	var yaw_land := facing + turn
 	var side := -1.0 if s == &"l" else 1.0
-	var width := lerpf(HIP_X, 0.06, run_k)
+	var width := lerpf(HIP_X, 0.08, run_k)
 	# Walking the foot lands as far ahead as it pushes off behind; running it lands closer in and
 	# pushes off further back (long rear-leg extension).
-	var ahead := lerpf(0.45, 0.4, run_k)
+	var ahead := lerpf(lerpf(0.45, 0.4, run_k), 0.62, brake)
 	var p := body + vel_land * (stance_t * ahead) + Basis(Vector3.UP, yaw_land) * Vector3(side * width, 0, 0)
 	var g := _ground(space, p, root.origin.y)
 	_target[s] = Vector3(p.x, g.y + ANKLE_H, p.z)
@@ -227,20 +246,57 @@ func _foot_basis(yaw: float, n: Vector3) -> Basis:
 	return Basis(Quaternion(Vector3.UP, n.normalized())) * b
 
 
-## A planted foot left far from its hip (reversing, a sudden shove, turning around) steps right
-## away instead of stretching the legs into a lunge: the gait phase jumps to its lift-off. Only
-## in the walking gait, where the other foot then stays planted.
+## A planted foot whose heading is far off the body's (turning sharply, the body spinning round
+## after a skid) pivots on the ball of the foot toward it, like a person turning on the spot:
+## the toe stays where it is, the heel swings round.
+func _pivot(s: StringName, facing: float, dt: float) -> void:
+	var err := wrapf(facing - (_yaw[s] as float), -PI, PI)
+	if absf(err) > 0.5:
+		_pivoting[s] = true
+	elif absf(err) < 0.15:
+		_pivoting[s] = false
+	if not _pivoting[s]:
+		return
+	var old := Basis(Vector3.UP, _yaw[s])
+	var toe: Vector3 = (_plant[s] as Vector3) + old * TOE
+	_yaw[s] = (_yaw[s] as float) + clampf(err, -8.0 * dt, 8.0 * dt)
+	_plant[s] = toe - Basis(Vector3.UP, _yaw[s]) * TOE
+
+
+## A planted foot left far from its hip (reversing, a sudden shove, turning around) or turned far
+## off the body's heading steps right away instead of stretching or twisting the legs: the gait
+## phase jumps to its lift-off, the other foot stays planted while the duty factor keeps double
+## support (walking, or a slow run right after braking); faster running steps come quickly
+## anyway and the pivot handles the heading.
 func _recover_overreach(root: Transform3D, facing: float) -> void:
-	if duty <= 0.52 or _swinging[&"l"] or _swinging[&"r"]:
+	if duty <= 0.45 or _swinging[&"l"] or _swinging[&"r"]:
 		return
 	var reach := lerpf(0.5, 0.6, run_k)
-	for s in SIDES:
+	var right := Basis(Vector3.UP, facing) * Vector3.RIGHT
+	# The foot that is worse off steps first.
+	var order := SIDES.duplicate()
+	if _foot_error(&"r", root, facing) > _foot_error(&"l", root, facing):
+		order.reverse()
+	for s in order:
 		var side := -1.0 if s == &"l" else 1.0
 		var hip := root.origin + Basis(Vector3.UP, facing) * Vector3(side * HIP_X, 0, 0)
 		var p: Vector3 = _plant[s]
-		if Vector2(p.x - hip.x, p.z - hip.z).length() > reach:
+		var twisted := absf(wrapf(facing - (_yaw[s] as float), -PI, PI)) > 1.0
+		# Feet crossed over (the body turned round over them): step the foot that is on the
+		# wrong side back out.
+		var crossed := (p - root.origin).dot(right) * side < -0.03
+		if Vector2(p.x - hip.x, p.z - hip.z).length() > reach or twisted or crossed:
 			phase = fmod(duty + (0.0 if s == &"l" else 0.5) + 0.001, 1.0)
 			return
+
+
+## How far a planted foot is from where it belongs under its hip (m, heading error counts ~0.3 m
+## per radian).
+func _foot_error(s: StringName, root: Transform3D, facing: float) -> float:
+	var side := -1.0 if s == &"l" else 1.0
+	var home := root.origin + Basis(Vector3.UP, facing) * Vector3(side * HIP_X, 0, 0)
+	var p: Vector3 = _plant[s]
+	return Vector2(p.x - home.x, p.z - home.z).length() + 0.3 * absf(wrapf(facing - (_yaw[s] as float), -PI, PI))
 
 
 ## Standing still with both feet down near where they belong: no need to step.
