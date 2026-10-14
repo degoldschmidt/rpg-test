@@ -129,6 +129,12 @@ func _process(_dt: float) -> void:
 		PlayerController.prof_add("skin", Time.get_ticks_usec() - t0)
 
 
+func set_skin_color(c: Color) -> void:
+	skin_color = c
+	if _material:
+		_material.albedo_color = c
+
+
 ## Debug tint (F3 shows LOD tiers); Color.WHITE clears it.
 func set_tint(c: Color) -> void:
 	if _material:

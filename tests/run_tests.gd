@@ -20,6 +20,7 @@ const TESTS := [
 	["test_lod_tiers", "core", true],
 	["test_lod_promotes_on_hit", "core", false],
 	["test_lod_ragdoll_stays_full", "core", false],
+	["test_crowd_layer", "core", true],
 	["test_lift_carry_throw", "objects", true],
 	["test_lift_and_drop", "objects", false],
 	["test_push_and_pull_crate", "objects", true],
@@ -511,6 +512,59 @@ func test_lod_ragdoll_stays_full() -> void:
 
 
 # ------------------------------------------------------------------ combat tests
+
+func test_crowd_layer() -> void:
+	print("crowd layer: data agents, nearest become real characters")
+	var vat := CrowdVAT.get_baked(self)
+	var d: PackedFloat32Array = vat.pos_data
+	var lo := Vector3.INF
+	var hi := -Vector3.INF
+	for i in range(0, d.size(), 3):
+		var p := Vector3(d[i], d[i + 1], d[i + 2])
+		lo = lo.min(p)
+		hi = hi.max(p)
+	check("baked animation has the character's size, feet on the ground",
+		hi.y - lo.y > 1.6 and hi.y - lo.y < 2.0 and absf(lo.y) < 0.1, "(%s .. %s)" % [lo, hi])
+	var layer := CrowdLayer.new()
+	main.add_child(layer)
+	var c: Vector3 = main.markers.open + Vector3(0, 0, -30)
+	for i in 64:
+		layer.add_agent(c + Vector3((i % 8) * 2.6 - 9.1, 0, (i / 8) * 2.6 - 9.1), 0.0, Color(0.7, 0.5, 0.4))
+	layer.focus = player
+	layer.build()
+	await place(c + Vector3(0, 0, 40), 0.5)
+	check("far from the crowd nobody is materialized", layer.materialized_count() == 0)
+	await place(c + Vector3(1.3, 0, 12), 0.5, 0.0)   # in line with a column of agents
+	var n := layer.materialized_count()
+	check("nearest agents become real characters, up to the pool size", n == layer.pool_size, "(%d)" % n)
+	var ok := true
+	for ch: PlayerController in layer.active_characters():
+		ok = ok and ch.global_position.distance_to(player.global_position) < layer.query_radius + 1.0 \
+			and ch.state != PlayerController.State.RAGDOLL
+	check("materialized characters stand near the player, upright", ok)
+	# Sprint through the crowd: running into the real characters knocks them over.
+	var hit := false
+	inp(Vector2(0, -1), true)
+	for i in int(3.0 / TICK):
+		await physics_frame
+		for ch: PlayerController in layer.active_characters():
+			hit = hit or ch.state in [PlayerController.State.RAGDOLL, PlayerController.State.STAGGER]
+	inp()
+	check("running into crowd NPCs staggers or knocks them down", hit)
+	await place(c + Vector3(0, 0, 60), 8.0)
+	check("after the player leaves, characters go back to the pool", layer.materialized_count() == 0,
+		"(%d still out)" % layer.materialized_count())
+	var stray := 0.0
+	var min_gap := INF
+	for i in layer.count:
+		stray = maxf(stray, Vector2(layer.pos[i].x - layer.home[i].x, layer.pos[i].z - layer.home[i].z).length())
+		for j in range(i + 1, layer.count):
+			min_gap = minf(min_gap, Vector2(layer.pos[i].x - layer.pos[j].x, layer.pos[i].z - layer.pos[j].z).length())
+	check("agents keep wandering near home after being handed back", stray < layer.wander_radius + 1.5, "(%.1f m)" % stray)
+	check("agents keep personal space", min_gap > 0.4, "(closest pair %.2f m)" % min_gap)
+	layer.queue_free()
+	await physics_frame
+
 
 func test_run_into_npc() -> void:
 	print("running into NPCs")

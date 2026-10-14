@@ -12,6 +12,7 @@ It follows its animation tightly, wobbles when hit, and collapses into a full ra
 
 ```
 tools/crowd_mac.sh                # crowd test live: 100 NPCs, real rendering, real FPS overlay
+tools/crowd_mac.sh live --npcs=1000   # 1000 NPCs (crowd layer); --characters makes all of them real characters
 tools/crowd_mac.sh live-uncapped  # same with vsync off, to see headroom above the display refresh
 tools/crowd_mac.sh measure        # simulation-only FPS (comparable with docs/performance.md)
 tools/crowd_mac.sh video          # record out/crowd_mac.mp4 (brew install ffmpeg for .mp4)
@@ -205,6 +206,7 @@ The suite has 151 deterministic gameplay checks. It covers:
 - log and bumper knockdowns
 - 30 s of random input with NaN and separation checks
 - LOD: tiers by distance, frozen and parked puppets, promotion on hit, ragdolls staying FULL until they get up
+- Crowd layer: baked animation size, nearest agents materialized up to the pool size, knockdowns in the crowd, characters returned to the pool, wandering and personal space
 
 ## Performance
 
@@ -212,7 +214,8 @@ See [docs/performance.md](docs/performance.md) for the benchmark (`tests/benchma
 - A fully simulated active-ragdoll character costs about 0.35 ms per 120 Hz physics tick on a 2.1 GHz cloud CPU.
 - A budgeted LOD keeps only the nearest 5 characters fully simulated and the next 20 in a cheaper KINEMATIC tier; everyone else is PROXY_ONLY. Reduced tiers park their physics bodies and update at 30 Hz or 15 Hz, costing about 0.05 ms per character (7–9× cheaper).
 - Hits, strikes and being run into promote a character back to full simulation instantly.
-- **Crowd test** (`tests/crowd.gd`): the player sprints through 100 wandering NPCs, knocking some over, at about 76 FPS of simulation on this cloud CPU (CPU only, no rendering).
+- **Crowd layer** (`scripts/crowd/`): NPCs as plain data drawn with chunked MultiMeshes and baked vertex animation. Only the 24 nearest become real characters, borrowed from a pool.
+- **Crowd test** (`tests/crowd.gd --npcs=N`): the player sprints through a crowd, knocking some NPCs over. Simulation FPS on this cloud CPU (no rendering): 1000 NPCs at 119 FPS on average (99th percentile 76 FPS), 10,000 at 61 FPS. With every NPC a full character (`--characters`), 100 NPCs ran at 76 FPS.
 
 ## Watching it without playing
 
@@ -245,4 +248,4 @@ tests/run_tests.gd
 
 - Replace the procedural poses with authored animations, sampled as puppet targets, and give the character clothing and textures.
 - Combat systems on top of the reactions: health, more moves, weapons, and enemy AI beyond the training dummies.
-- Scale crowds further (see [docs/performance.md](docs/performance.md)): 30 Hz logic for distant characters, skipping off-screen skins, and moving the pose generator, FK/IK and drive to GDExtension.
+- Scale crowds further (see [docs/performance.md](docs/performance.md)): move the crowd update and the pose generator, FK/IK and drive to GDExtension, and give crowd agents ground queries so crowds can fill streets and stairs.

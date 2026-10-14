@@ -71,7 +71,8 @@ func watch(character: PlayerController, label: String) -> void:
 func _tier_counts() -> String:
 	var n := [0, 0, 0]
 	for c in get_tree().get_nodes_in_group("characters"):
-		n[(c as PlayerController).rig.lod] += 1
+		if (c as PlayerController).can_process():   # pooled crowd characters are parked
+			n[(c as PlayerController).rig.lod] += 1
 	return "%d / %d / %d" % n
 
 

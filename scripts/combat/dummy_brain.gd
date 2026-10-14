@@ -70,6 +70,24 @@ func _physics_process(dt: float) -> void:
 	body.external_input = inp
 
 
+## Continue a stroll handed over from the crowd layer (direction as stick input, time to the
+## next decision).
+func start_wander(home: Vector3, seed: int, dir: Vector2, time_left: float) -> void:
+	_rng.seed = seed
+	_home = home
+	_wander_dir = dir
+	_wander_t = time_left
+	_wander_acc = 0.0
+
+
+func wander_dir() -> Vector2:
+	return _wander_dir
+
+
+func wander_time_left() -> float:
+	return _wander_t
+
+
 ## Stroll in random directions around the spawn point, with pauses. Seeded, so runs repeat.
 func _wander(dt: float, inp: Dictionary) -> void:
 	if _wander_t == 0.0 and _home == Vector3.ZERO:
@@ -88,4 +106,9 @@ func _wander(dt: float, inp: Dictionary) -> void:
 			if Vector2(to_home.x, to_home.z).length() > wander_radius:
 				d = Vector2(to_home.x, to_home.z).normalized()
 			_wander_dir = d * 0.45
+	# Out of the home radius and still walking away: turn back now (as the crowd layer does).
+	var th := _home - body.global_position
+	var h2 := Vector2(th.x, th.z)
+	if _wander_dir != Vector2.ZERO and h2.length() > wander_radius and _wander_dir.dot(h2) < 0.0:
+		_wander_dir = h2.normalized() * 0.45
 	inp["move"] = _wander_dir

@@ -33,7 +33,7 @@ static func assign(tree: SceneTree, cfg: MovementConfig) -> void:
 	var full := 0
 	for n in tree.get_nodes_in_group("characters"):
 		var c := n as PlayerController
-		if c == null or not c.lod_enabled or c.lod_force >= 0:
+		if c == null or not c.lod_enabled or c.lod_force >= 0 or not c.can_process():
 			continue
 		if c.lod_locked_full():
 			c.lod_assigned = Tier.FULL
