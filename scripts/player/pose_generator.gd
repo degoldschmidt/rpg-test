@@ -306,7 +306,7 @@ func compute(c: Dictionary, dt: float) -> Dictionary:
 	if clip_ok:
 		clip_pose = loco.update({"grounded": c.get("grounded", true) and mode == &"ground", "root": c.get("root", Transform3D()),
 			"facing": c.get("facing", 0.0), "vel": v_now, "space": c.get("space"), "wish": c.get("wish", Vector3.ZERO),
-			"run": c.get("run", false), "skid": c.get("skid", false), "settle": atk.is_empty() and _attack_w < 0.01}, dt)
+			"run": c.get("run", false), "target_speed": c.get("target_speed", -1.0), "skid": c.get("skid", false), "settle": atk.is_empty() and _attack_w < 0.01}, dt)
 	_clip_w = move_toward(_clip_w, 1.0 if not clip_pose.is_empty() else 0.0, dt * 6.0)
 	if clip_pose.is_empty() and _clip_w > 0.0:
 		_clip_w = 0.0   # left the ground: hand straight back to the procedural pose
@@ -375,7 +375,8 @@ func _apply_clip(out: Dictionary, clip: Dictionary, w: float) -> void:
 			own = maxf(arms_proc * 0.6, attacking)   # strikes are thrown from the torso
 		elif b in [&"thigh_r", &"shin_r", &"foot_r"]:
 			own = _kick_w
-		bones[b] = (cb[b] as Quaternion).slerp(proc[b], maxf(1.0 - w, own))
+		var t := maxf(1.0 - w, own)
+		bones[b] = cb[b] if t <= 0.0 else (cb[b] as Quaternion).slerp(proc[b], t)
 	out.bones = bones
 	# A strike also owns the hips (it is thrown from the stance, not from the idle sway).
 	var root_proc := maxf(1.0 - w, _attack_w)

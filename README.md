@@ -18,6 +18,7 @@ tools/crowd_mac.sh measure        # simulation-only FPS (comparable with docs/pe
 tools/crowd_mac.sh video          # record out/crowd_mac.mp4 (brew install ffmpeg for .mp4)
 tools/crowd_mac.sh game           # play the test level
 tools/crowd_mac.sh tests          # full test suite
+tools/crowd_mac.sh import         # import the Mixamo clips in assets/animations/mixamo/ once (lists what each is used for)
 ```
 
 **Anywhere else:**
@@ -127,9 +128,15 @@ RagdollRig     → 16 RigidBody3D segments + Generic6DOFJoint3D (anatomical limi
   - **Getting clips.** Download them as described in `assets/animations/mixamo/README.md` and drop them in that folder. They stay out of git, since Mixamo's terms don't allow redistributing them.
   - **Import.** `MocapImporter` retargets them onto the puppet by world-space bone direction, so it doesn't depend on the source rig's bone axes or its T-pose. It extracts root motion (speed, heading) and foot contacts, and caches the result in `user://mocap_cache/`.
   - **Playback.** `LocomotionPlayer` blends the looping cycles (idle, walk, jog, run, sprint) by the capsule's speed. Cycles are phase-locked on the left-foot touchdown, and playback rate follows the actual speed.
-  - **Transitions.** Stopping, sprinting off from a standstill and turning round at a run play the matching clips ("Stop Walking" / "Run To Stop", "Idle To Sprint", "Running Turn 180"). Clips are found by name. A stop clip's time follows how much speed the capsule has lost, so the clip's braking lines up with the real deceleration. Without these clips, the cycles cover it.
+  - **Transitions.** Clips are found by name; without them, the cycles cover it.
+    - **Stops** ("Stop Walking" / "Run To Stop"): clip time follows how much speed the capsule has lost, so the clip's braking lines up with the real deceleration.
+    - **Starts** ("Start Walking" at walking pace, "Idle To Sprint" when running): clip time runs at the capsule's speed over the clip's, so its strides cover the ground the capsule does. On leaving the clip, the cycles pick the phase whose feet match.
+    - **Turning round at a run** ("Running Turn 180"): the body follows the clip's heading.
+    - **Turning on the spot** ("Left Turn", "Right Turn 90", "Walking Turn 180"; any one-shot "turn" clip that barely travels): picked by direction and angle, with the clip's turn scaled to the angle asked for. The body steps round with the clip while the capsule already faces the new way.
+    - **Hip height:** a transition's dip below rest is eased beyond 12 cm (Mixamo's running turn drops the hips 37 cm).
   - **Feet.** Planted feet are locked where they touched down and released back onto the clip's path at lift-off. The rig's leg IK places the legs. When standing with a foot out of place (after a stop, or turning on the spot), the feet take small steps back into the idle stance.
   - **Overlays.** Attacks, guard, carry and push take over the arms, and a kick takes the kicking leg. The turn bank goes on top.
+  - **Crowd.** The crowd's baked stroll and idle (`CrowdVAT`) come from the clips too.
   - **Fallback.** With no clips, everything runs procedurally as before. Tests use a synthetic Mixamo-like rig (`tests/mocap_fixture.gd`) with random bone axes, so the pipeline is tested in CI.
 - **Foot IK** (in `ragdoll_rig.gd`, after FK) for grounded poses outside locomotion (getting up, sliding). Each foot raycasts down to the ground under it.
   - The pelvis drops for the lower foot.
@@ -217,7 +224,7 @@ The suite has 151 deterministic gameplay checks. It covers:
 - combat: punch flinch with physical recoil, punch combo stagger, kick stagger and knock-back, knockdown with a run-up or on a staggered or airborne target, get-up afterwards, guard blocking from the front but not from behind, kicks breaking guard, the sparring dummy hitting the player and the player's guard blocking it, kicks hitting the bag harder than punches, no attacks while carrying
 - objects: lift, carry while running, throw, drop, push and pull the crate, the heavier block being slower, the monolith being too heavy
 - ledges: ground, running and mid-air mantles; grab, hang height and hand placement; shimmy and stopping at the ledge end; climbing up; dropping off without re-grabbing; out-of-reach walls
-- mocap: importing a Mixamo-like rig (root motion, foot contacts, arms down from the T-pose, ankle height), clip-driven walk and jog with locked feet, forward knees and contralateral arms, standing, and the procedural fallback without clips
+- mocap: importing a Mixamo-like rig (root motion, foot contacts, arms down from the T-pose, ankle height), clip-driven walk and jog with locked feet, forward knees and contralateral arms, standing, walk start and turning on the spot from their clips, the crowd bake from clips, and the procedural fallback without clips
 - gait: arms swing contralaterally to the legs (walk, jog, run); in a slalom and a turn-around at speed the feet don't cross, planted feet stay under the body's heading, the body leans into the turns and the knees keep bending forward
 - gait: planted feet don't slide, swinging feet clear the ground and the hips stay up at stroll, walk and run; stopping settles both feet under the hips and then stops stepping; turning on the spot steps the feet round
 - foot IK on a 30° slope and on stairs (feet on the surface and tilted to it, pelvis drop, stair climb without sinking)
@@ -238,7 +245,7 @@ See [docs/performance.md](docs/performance.md) for the benchmark (`tests/benchma
 - A budgeted LOD keeps only the nearest 5 characters fully simulated and the next 20 in a cheaper KINEMATIC tier; everyone else is PROXY_ONLY. Reduced tiers park their physics bodies and update at 30 Hz or 15 Hz, costing about 0.05 ms per character (7–9× cheaper).
 - Hits, strikes and being run into promote a character back to full simulation instantly.
 - **Crowd layer** (`scripts/crowd/`): NPCs as plain data drawn with chunked MultiMeshes and baked vertex animation. Only the 24 nearest become real characters, borrowed from a pool.
-- **Crowd test** (`tests/crowd.gd --npcs=N`): the player sprints through a crowd, knocking some NPCs over. Simulation FPS on this cloud CPU (no rendering): 1000 NPCs at 105 FPS on average (99th percentile 65 FPS) with the procedural gait, 85 FPS with mocap clips, 10,000 at 55 FPS. With every NPC a full character (`--characters`), 100 NPCs run at 66 FPS.
+- **Crowd test** (`tests/crowd.gd --npcs=N`): the player sprints through a crowd, knocking some NPCs over. Simulation FPS on this cloud CPU (no rendering): 1000 NPCs at 105 FPS on average (99th percentile 65 FPS) with the procedural gait; with mocap clips about 8% slower (84 vs 78 FPS measured back to back on the same machine), 10,000 at 55 FPS. With every NPC a full character (`--characters`), 100 NPCs run at 66 FPS.
 
 ## Watching it without playing
 
@@ -259,7 +266,9 @@ scripts/player/player_controller.gd  movement + state machine
 scripts/player/pose_generator.gd     procedural poses (crouch, slide, air, roll, get-up) + gait body motion
 scripts/player/foot_planner.gd       locomotion: planted feet, swing arcs, cadence / stride / duty by speed
 scripts/anim/mocap_importer.gd       Mixamo FBX -> MocapClip (retarget, root motion, foot contacts)
-scripts/anim/locomotion_player.gd    clip blending by speed, phase sync, foot locking
+scripts/anim/locomotion_player.gd    clip blending by speed, phase sync, foot locking, transitions
+tools/import_mocap.gd                imports and caches the clips, lists what each is used for
+tests/transition_probe.gd            traces the mocap transitions (hip height, body yaw, foot locks)
 scripts/player/ragdoll_rig.gd        builds the puppet, FK targets, muscles, hit handling
 scripts/player/puppet_bone.gd        per-body drive + contact hit detection
 scripts/player/bone_def.gd           humanoid definition

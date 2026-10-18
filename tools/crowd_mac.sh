@@ -7,6 +7,7 @@
 #   tools/crowd_mac.sh video         measure, then record out/crowd_mac.mp4 (needs ffmpeg for .mp4)
 #   tools/crowd_mac.sh game          play the test level yourself
 #   tools/crowd_mac.sh tests         run the full gameplay test suite
+#   tools/crowd_mac.sh import        import the Mixamo clips in assets/animations/mixamo/ once
 #
 # Crowd modes take extra options, e.g.:
 #   tools/crowd_mac.sh live --npcs=1000          1000 NPCs (crowd layer)
@@ -85,8 +86,11 @@ case "$MODE" in
   tests)
     GODOT="$GODOT_BIN" tests/run.sh full
     ;;
+  import)
+    "$GODOT_BIN" --headless --path . -s tools/import_mocap.gd
+    ;;
   *)
-    sed -n '2,17p' "$0"
+    sed -n '2,18p' "$0"
     exit 1
     ;;
 esac
