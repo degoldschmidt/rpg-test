@@ -45,6 +45,8 @@ const TESTS := [
 	["test_gait_turns", "movement", false],
 	["test_mocap_import", "anim", true],
 	["test_mocap_locomotion", "anim", true],
+	["test_mocap_transitions", "anim", true],
+	["test_mocap_crowd_bake", "anim", false],
 	["test_mocap_fallback", "anim", false],
 	["test_walk_momentum", "movement", true],
 	["test_run_momentum", "movement", false],
@@ -833,6 +835,101 @@ func test_mocap_locomotion() -> void:
 	await place(open(), 1.0)
 	check("standing: both feet planted, clips still in charge", player.pose_gen._clip_w > 0.99
 		and player.pose_gen.loco.stance[&"l"] >= 0.0 and player.pose_gen.loco.stance[&"r"] >= 0.0)
+	use_clips(null)
+
+
+## Walk start and turning on the spot play their clips (fixture "Start Walking", "Left Turn").
+func test_mocap_transitions() -> void:
+	print("mocap transitions: walk start, turning on the spot")
+	var lib := fixture_library()
+	for kind in [["start_walk", "Start Walking"], ["turn_left", "Left Turn"]]:
+		var sc := MocapFixture.make_scene(kind[0], 3)
+		lib[kind[1]] = MocapImporter.import_scene(sc, kind[1], false)
+		sc.free()
+	var turn: MocapClip = lib["Left Turn"]
+	check("standing turn imported: about 90 degrees left, on the spot", absf(turn.turn - PI / 2) < 0.25 and turn.speed < 0.3,
+		"(%.0f deg, %.2f m/s)" % [rad_to_deg(turn.turn), turn.speed])
+	use_clips(lib)
+	await place(open(), 1.0)
+	var L: LocomotionPlayer = player.pose_gen.loco
+	check("transition clips found", L.start_walk == lib["Start Walking"] and L.turns_stand == [turn])
+	# Walk start: from standing, the start clip plays, then hands over to the walk cycle.
+	inp(Vector2(0, -0.45))
+	var started := false
+	var prev := {}
+	var slip := 0.0
+	var n := 0
+	var lo := INF
+	for i in int(1.5 / TICK):
+		await physics_frame
+		started = started or (L.transition == &"start" and L._tr == lib["Start Walking"])
+		lo = minf(lo, player.rig.pelvis().global_position.y - player.global_position.y)
+		for s: StringName in [&"l", &"r"]:
+			var q := player.rig.display_transform(player.rig.bones[StringName("foot_" + s)]).origin
+			if L.stance[s] > 0.1 and L.stance[s] < 0.6 and prev.has(s):
+				slip += Vector2(q.x - prev[s].x, q.z - prev[s].z).length() / TICK
+				n += 1
+			prev[s] = q
+	check("walk start: the start clip plays", started)
+	check("walk start: then the walk cycle takes over", L.transition == &"")
+	check("walk start: planted feet don't slide", n > 0 and slip / n < 0.1, "(%.3f m/s)" % (slip / maxf(n, 1)))
+	check("walk start: hips stay up", lo > 0.8, "(pelvis min %.2f m)" % lo)
+	# Turning on the spot: a tap to the side steps the body round with the clip.
+	inp()
+	await place(open(), 1.0)
+	L = player.pose_gen.loco
+	var yaw0 := player.facing_yaw
+	inp(Vector2(-1, 0))
+	await seconds(0.15)
+	inp()
+	var turned := false
+	var lag := 0.0
+	lo = INF
+	for i in int(2.0 / TICK):
+		await physics_frame
+		turned = turned or L.transition == &"turn_stand"
+		lag = maxf(lag, absf(L._yaw_off))
+		lo = minf(lo, player.rig.pelvis().global_position.y - player.global_position.y)
+	var pel_f := -player.rig.display_transform(player.rig.pelvis()).basis.z
+	var pel_err := absf(wrapf(atan2(-pel_f.x, -pel_f.z) - player.facing_yaw, -PI, PI))
+	var feet_err := 0.0
+	for s: StringName in [&"l", &"r"]:
+		var f: Vector3 = -(L.feet[s] as Transform3D).basis.z
+		feet_err = maxf(feet_err, absf(wrapf(atan2(-f.x, -f.z) - player.facing_yaw, -PI, PI)))
+	check("turn on the spot: the turn clip plays", turned, "(turned %.0f deg)" % rad_to_deg(wrapf(player.facing_yaw - yaw0, -PI, PI)))
+	check("turn on the spot: the body steps round (lags the capsule, doesn't snap)", lag > 0.3, "(max lag %.2f rad)" % lag)
+	check("turn on the spot: body and feet end facing the new way", pel_err < 0.3 and feet_err < 0.5,
+		"(pelvis %.2f, feet %.2f rad off)" % [pel_err, feet_err])
+	check("turn on the spot: hips stay up", lo > 0.8, "(pelvis min %.2f m)" % lo)
+	use_clips(null)
+
+
+## With clips, the crowd's baked stroll and idle come from them (fixture clips here).
+func test_mocap_crowd_bake() -> void:
+	print("mocap crowd bake: VAT stroll and idle from the clips")
+	var lib := fixture_library()
+	use_clips(lib)
+	CrowdVAT._cache = {}
+	var vat := CrowdVAT.get_baked(self)
+	CrowdVAT._cache = {}   # later tests bake whatever library they use
+	var d: PackedFloat32Array = vat.pos_data
+	var lo := Vector3.INF
+	var hi := -Vector3.INF
+	var finite := true
+	for i in range(0, d.size(), 3):
+		var p := Vector3(d[i], d[i + 1], d[i + 2])
+		finite = finite and p.is_finite()
+		lo = lo.min(p)
+		hi = hi.max(p)
+	check("baked from the clips", vat.mocap)
+	check("baked animation has the character's size, feet on the ground", finite
+		and hi.y - lo.y > 1.6 and hi.y - lo.y < 2.0 and absf(lo.y) < 0.1, "(%s .. %s)" % [lo, hi])
+	var walk: MocapClip = lib.walk
+	var run: MocapClip = lib.run
+	var strides := [walk.speed * walk.cycle_length(), run.speed * run.cycle_length()]
+	check("stroll cycle covers the clips' stride (feet don't slide)", vat.walk_cycle_m > strides.min() * 0.95
+		and vat.walk_cycle_m < strides.max() * 1.05, "(%.2f m per cycle; clips %.2f .. %.2f)" % [vat.walk_cycle_m, strides.min(), strides.max()])
+	check("idle loop is the idle clip's length", is_equal_approx(vat.idle_period, (lib.idle as MocapClip).length()))
 	use_clips(null)
 
 

@@ -2,7 +2,7 @@ extends SceneTree
 ## Scripted showcase clips for watching the prototype without playing it. Record one with:
 ##   xvfb-run godot --rendering-driver opengl3 --resolution 1280x720 --write-movie out.avi \
 ##     --fixed-fps 30 --path . -s tests/showcase.gd -- --clip=combat
-## Clips: locomotion, turns, follow, movement, gait, falls, terrain, ledges, objects, combat, hazards
+## Clips: transitions, locomotion, turns, follow, movement, gait, falls, terrain, ledges, objects, combat, hazards
 
 var main: Node3D
 var player: PlayerController
@@ -173,6 +173,48 @@ func clip_locomotion() -> void:
 	say("Down a 30° slope: feet tilt to the ground")
 	await drive(Vector3.BACK * 0.5, 3.0, -1.6, {}, 0.0)
 	await drive(Vector3.ZERO, 1.0, -1.6, {}, 0.0)
+
+
+## Mocap transitions (needs the Mixamo clips): walk start and stop, turning on the spot, sprint
+## start, the turn-around at a run, and the crowd strolling on the baked clips.
+func clip_transitions() -> void:
+	main.hud.get_child(0).visible = false
+	var o: Vector3 = main.markers.open + Vector3(10, 0, 30)
+	await spot(o, 0.0, 1.2, -0.12, 3.6)
+	await drive(Vector3.ZERO, 1.0, 1.2, {}, 0.0)
+	say("Walk start: steps off from standing (Start Walking)")
+	await drive(Vector3.FORWARD * 0.45, 3.0, 1.3)
+	say("Walk stop: braking steps, then the feet settle (Stop Walking)")
+	await drive(Vector3.ZERO, 3.0, 1.3)
+	for t in [["Turn on the spot, left 90 (Left Turn)", Vector3.LEFT], ["Turn on the spot, right 90 (Right Turn 90)", Vector3.RIGHT],
+			["Turn on the spot, 180 (Walking Turn 180)", Vector3.BACK]]:
+		var face := player.facing_yaw
+		say(t[0])
+		go(Basis(Vector3.UP, face) * t[1] * 0.3)
+		await secs(0.15)
+		idle()
+		for i in int(2.2 * 120.0):
+			cam.yaw = lerp_angle(cam.yaw, face + 0.9, 0.02)
+			await physics_frame
+	say("Sprint start from standing (Idle To Sprint)")
+	await drive(Vector3.ZERO, 0.6, 1.4)
+	var fwd := Basis(Vector3.UP, player.facing_yaw) * Vector3.FORWARD
+	await drive(fwd, 2.5, 1.4, {"run": true})
+	say("Turn around at a run: plant, pivot, push off (Running Turn 180)")
+	await drive(-fwd, 2.2, 1.4, {"run": true}, 0.0)
+	await drive(Vector3.ZERO, 1.5, 1.4, {}, 0.0)
+	# The crowd on the baked mocap stroll (no live characters, so every NPC here is the bake).
+	var layer := CrowdLayer.new()
+	layer.pool_size = 0
+	main.add_child(layer)
+	var c: Vector3 = main.markers.open + Vector3(-12, 0, -10)
+	for i in 36:
+		layer.add_agent(c + Vector3((i % 6) * 2.4 - 6.0, 0, (i / 6) * 2.4 - 6.0), randf() * TAU, Color(0.75, 0.55, 0.42))
+	layer.focus = player
+	layer.build()
+	await spot(c + Vector3(0, 0, 9), 0.0, 0.0, -0.25, 4.0)
+	say("Crowd: the baked VAT stroll and idle now come from the clips")
+	await secs(6.0)
 
 
 ## Turning: a running slalom and a turn-around at speed, from behind and from above.

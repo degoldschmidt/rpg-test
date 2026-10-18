@@ -1169,6 +1169,7 @@ func _update_puppet(dt: float) -> void:
 		"vel": velocity,
 		"wish": _wish_dir(),
 		"run": _in.get("run", false),
+		"target_speed": _wish_dir().length() * (config.run_speed if _in.get("run", false) else config.walk_speed),
 		"grounded": is_on_floor(),
 		"space": get_world_3d().direct_space_state if rig.lod == CharacterLOD.Tier.FULL else null,
 	}

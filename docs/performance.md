@@ -120,6 +120,8 @@ tools/crowd_mac.sh live --npcs=1000      # real time with rendering, on a Mac
 | 1000 | 9.6 ms (105 FPS) | 15.3 ms (65 FPS) | 1.6 ms | 4.8 full, 19.1 kinematic |
 | 10,000 | 18.2 ms (55 FPS) | 30.4 ms (33 FPS) | 9.7 ms | 4.8 full, 19.1 kinematic |
 
+**With mocap clips** (`assets/animations/mixamo/`, see `scripts/anim/`), 1000 NPCs run about 8% slower: 78 vs 84 FPS on average, measured back to back on the same (busier) VM. Pose generation goes from 2.0 to 3.1 ms per frame for the 24 real characters. The crowd layer itself costs the same, because the baked stroll is just different frames in the same texture.
+
 These numbers include the foot-placement locomotion (planted feet, leg IK in every tier), which costs about 1.3 ms per frame over the old sine-wave gait for the 24 real characters. Before it: 159 / 119 / 61 FPS.
 
 About 5 ms of every frame is the 24 real characters, about the same at any crowd size. The crowd layer costs about 1 µs per NPC per frame in GDScript. At 10,000 NPCs, that loop is the next thing to move to C++ (GDExtension) or a compute shader.
@@ -129,4 +131,4 @@ About 5 ms of every frame is the 24 real characters, about the same at any crowd
 **Limits:**
 - Crowd agents walk on the plane of their home point. They don't query the ground or collide with level geometry, so crowds belong on open ground.
 - Hazards and thrown props only affect the real characters near the player.
-- Handing an agent to a character snaps from the baked stroll to the procedural pose; at that distance the switch is subtle.
+- Handing an agent to a character snaps from the baked stroll to the live pose; at that distance the switch is subtle.

@@ -1,9 +1,11 @@
 class_name CrowdVAT
 extends RefCounted
-## Bakes the humanoid's procedural stroll and idle cycles into vertex animation textures (VAT),
+## Bakes the humanoid's stroll and idle cycles into vertex animation textures (VAT),
 ## so a crowd can be drawn with one MultiMesh and zero CPU skinning. The poses come from the
 ## same PoseGenerator -> FK -> HumanoidSkin path the real characters use, sampled once at startup
 ## (about 40 frames of 1226 vertices), so crowd NPCs look like the reduced-LOD characters.
+## With mocap clips present (LocomotionPlayer), that path plays the clips, so the crowd strolls
+## and idles with the same mocap as the characters; otherwise it bakes the procedural gait.
 ##
 ## Texture layout: one row per frame, one texel per vertex (x = vertex index stored in UV2.x).
 ## Rows 0..WALK_FRAMES-1 are the stroll cycle, the next IDLE_FRAMES rows the idle cycle.
@@ -52,6 +54,10 @@ static func _bake(tree: SceneTree) -> Dictionary:
 	var cfg := c.config
 	var speed := cfg.walk_speed * STROLL_INPUT
 	var idle_period := TAU / 2.2   # PoseGenerator idle breathing
+	var loco := LocomotionPlayer.new() if PoseGenerator.use_mocap else null
+	var mocap := loco != null and loco.has_clips()
+	if mocap and loco.idle:
+		idle_period = loco.idle.length()   # the idle clip, one loop
 	var data := PackedFloat32Array()
 	var ndata := PackedFloat32Array()
 	data.resize(nv * 3 * (WALK_FRAMES + IDLE_FRAMES))
@@ -69,7 +75,7 @@ static func _bake(tree: SceneTree) -> Dictionary:
 	walk_ctx["root"] = start
 	probe.compute(walk_ctx, 1.0 / 60.0)
 	probe.compute(walk_ctx, 1.0 / 60.0)
-	var walk_cycle_t := 2.0 / probe.gait.cadence
+	var walk_cycle_t := loco.cycle_period(speed) if mocap else 2.0 / probe.gait.cadence
 	var cycles := [[walk_ctx, walk_cycle_t, WALK_FRAMES, 0], [idle_ctx, idle_period, IDLE_FRAMES, WALK_FRAMES]]
 	for cyc in cycles:
 		var ctx: Dictionary = cyc[0]
@@ -149,5 +155,5 @@ static func _bake(tree: SceneTree) -> Dictionary:
 	mat.set_shader_parameter("idle_frames", IDLE_FRAMES)
 	mesh.surface_set_material(0, mat)
 	return {"mesh": mesh, "material": mat, "walk_cycle_m": speed * walk_cycle_t, "idle_period": idle_period,
-		"stroll_speed": speed, "vertices": nv, "bake_ms": Time.get_ticks_msec() - t0,
+		"stroll_speed": speed, "vertices": nv, "bake_ms": Time.get_ticks_msec() - t0, "mocap": mocap,
 		"pos_data": data}

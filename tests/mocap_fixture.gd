@@ -35,7 +35,8 @@ const BONES := [   # name, parent, rest position (cm, world)
 
 
 ## A scene shaped like Godot's import of a Mixamo FBX: Armature (scale 0.01) / Skeleton3D, plus
-## an AnimationPlayer with one animation. kind: "walk", "run", "idle".
+## an AnimationPlayer with one animation. kind: "walk", "run", "idle" (loops), "start_walk"
+## (from standing into the walk) or "turn_left" (stepping round 90 degrees on the spot).
 static func make_scene(kind: String, seed := 1) -> Node3D:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed
@@ -64,10 +65,12 @@ static func make_scene(kind: String, seed := 1) -> Node3D:
 	var fps := 60.0
 	var spec: Dictionary = {"walk": {"v": 130.0, "T": 1.0, "duty": 0.58, "drop": 9.0, "lift": 9.0},
 		"run": {"v": 350.0, "T": 0.68, "duty": 0.36, "drop": 7.0, "lift": 30.0},
-		"idle": {"v": 0.0, "T": 3.0, "duty": 1.0, "drop": 1.0, "lift": 0.0}}[kind]
-	var T: float = spec.T
+		"idle": {"v": 0.0, "T": 3.0, "duty": 1.0, "drop": 1.0, "lift": 0.0},
+		"start_walk": {"v": 130.0, "T": 1.0, "duty": 0.58, "drop": 9.0, "lift": 9.0, "len": 2.0, "ramp": 1.2},
+		"turn_left": {"v": 0.0, "T": 1.0, "duty": 1.0, "drop": 1.0, "lift": 0.0, "len": 1.0, "turn": PI / 2}}[kind]
+	var T: float = spec.get("len", spec.T)
 	anim.length = T
-	anim.loop_mode = Animation.LOOP_LINEAR
+	anim.loop_mode = Animation.LOOP_NONE if spec.has("len") else Animation.LOOP_LINEAR
 	var tracks := {}
 	for b in BONES:
 		var path := NodePath("Armature/Skeleton3D:mixamorig_" + b[0])
@@ -79,7 +82,7 @@ static func make_scene(kind: String, seed := 1) -> Node3D:
 	var nframes := int(round(T * fps))
 	for f in nframes + 1:
 		var t := f / fps
-		var pose := _pose(spec, t)
+		var pose := _turn_pose(spec, t) if spec.has("turn") else _pose(spec, _warp(spec, t))
 		var delta: Dictionary = pose.delta
 		var world_now := {}
 		for b in BONES:
@@ -108,6 +111,50 @@ static func _local(b: Array, world_rest: Dictionary, _d: Basis, _x: Dictionary) 
 			parent = c
 	var pb: Basis = world_rest[b[1]]
 	return Transform3D(pb.inverse() * wb, pb.inverse() * ((b[2] as Vector3) - (parent[2] as Vector3)))
+
+
+## Starts: gait time for clip time t, with speed (and cadence) ramping up from standing over
+## spec.ramp seconds, so the feet stay planted while the body speeds up.
+static func _warp(sp: Dictionary, t: float) -> float:
+	if not sp.has("ramp"):
+		return t
+	var ramp: float = sp.ramp
+	var s := 0.0
+	var n := 60
+	for i in n:
+		var u := (i + 0.5) / n * t
+		var k := clampf(u / ramp, 0.0, 1.0)
+		s += k * k * (3.0 - 2.0 * k) * t / n
+	return s
+
+
+## Turning on the spot by spec.turn: the body rotates about the hips while the right foot
+## steps round first, then the left (each lifted, swung and set down at the new heading).
+static func _turn_pose(sp: Dictionary, t: float) -> Dictionary:
+	var T: float = sp.len
+	var u := clampf(t / T, 0.0, 1.0)
+	var yaw: float = float(sp.turn) * u * u * (3.0 - 2.0 * u)
+	var hips := Vector3(0, 99.0, 0)
+	var delta := {}
+	var body := Basis(Vector3.UP, yaw)
+	for b in BONES:
+		delta[b[0]] = body
+	for side in [["Left", 0.55, 0.85, 1.0], ["Right", 0.1, 0.4, -1.0]]:
+		var x: float = 9.0 * float(side[3])
+		var a := clampf((u - float(side[1])) / (float(side[2]) - float(side[1])), 0.0, 1.0)
+		var fyaw: float = float(sp.turn) * a * a * (3.0 - 2.0 * a)
+		var ankle := Basis(Vector3.UP, fyaw) * Vector3(x, 8.0, 0) + Vector3(0, 6.0 * sin(PI * a), 0)
+		# Leg IK in the body's frame (knee forward), then turned with the body.
+		var hip_l := Vector3(x, 92.0, 0)
+		var dirs := _leg_ik(hip_l, body.inverse() * ankle, 43.0, 42.0)
+		delta[side[0] + "UpLeg"] = body * _arc(Vector3.DOWN, dirs[0])
+		delta[side[0] + "Leg"] = body * _arc(Vector3.DOWN, dirs[1])
+		var rest_dir := Vector3(float(side[3]), 0, 0)
+		var arm := Vector3(0.12 * float(side[3]), -1.0, 0.05).normalized()
+		delta[side[0] + "Arm"] = body * _arc(rest_dir, arm)
+		delta[side[0] + "ForeArm"] = body * _arc(rest_dir, arm)
+		delta[side[0] + "Hand"] = body * _arc(rest_dir, arm)
+	return {"hips": hips, "delta": delta}
 
 
 ## Source-frame pose at time t: hips position (cm) and per-bone world rotation deltas from rest.
